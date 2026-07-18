@@ -28,7 +28,7 @@ from stockpredictor.common.logging import get_logger
 logger = get_logger(__name__)
 
 MODEL_NAME = "ProsusAI/finbert"
-SCORED_COLUMNS_ADDED = ["sentiment_score", "sentiment_label"]
+SCORED_COLUMNS_ADDED = ["sentiment_score", "sentiment_label", "model_version"]
 
 
 @lru_cache(maxsize=1)
@@ -48,16 +48,23 @@ def _polarity_from_scores(class_scores: list[dict[str, Any]]) -> tuple[float, st
 
 
 def score_articles(articles: pd.DataFrame, text_col: str = "title") -> pd.DataFrame:
-    """Add `sentiment_score` (float, [-1, 1]) and `sentiment_label`
-    (positive/negative/neutral) columns, scored from `text_col`. Scores the
-    headline rather than the RSS summary -- summaries from aggregator feeds
-    are often truncated mid-sentence or duplicate the title, and the
-    headline alone is what FinBERT's training distribution (financial news
-    headlines) most closely matches."""
+    """Add `sentiment_score` (float, [-1, 1]), `sentiment_label`
+    (positive/negative/neutral), and `model_version` columns, scored from
+    `text_col`. Scores the headline rather than the RSS summary --
+    summaries from aggregator feeds are often truncated mid-sentence or
+    duplicate the title, and the headline alone is what FinBERT's training
+    distribution (financial news headlines) most closely matches.
+
+    `model_version` (stamped as `MODEL_NAME`) is what lets
+    ingestion/news.py skip re-scoring an already-seen article safely: a
+    published headline's score can't change since FinBERT is
+    deterministic, but stamping the model identity means a future FinBERT
+    upgrade naturally triggers a full re-score instead of silently mixing
+    old- and new-model scores in the same column."""
     if articles.empty:
         out = articles.copy()
         for col in SCORED_COLUMNS_ADDED:
-            out[col] = pd.Series(dtype="object" if col == "sentiment_label" else "float64")
+            out[col] = pd.Series(dtype="float64" if col == "sentiment_score" else "object")
         return out
 
     classifier = _get_pipeline()
@@ -73,4 +80,5 @@ def score_articles(articles: pd.DataFrame, text_col: str = "title") -> pd.DataFr
     out = articles.copy()
     out["sentiment_score"] = scores
     out["sentiment_label"] = labels
+    out["model_version"] = MODEL_NAME
     return out

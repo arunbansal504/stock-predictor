@@ -68,3 +68,12 @@ def test_score_articles_empty_input_returns_empty_with_score_columns(monkeypatch
     assert out.empty
     for col in classifier.SCORED_COLUMNS_ADDED:
         assert col in out.columns
+
+
+def test_score_articles_stamps_model_version(monkeypatch):
+    """model_version is what lets ingestion/news.py skip re-scoring an
+    already-seen article safely -- see that module's docstring."""
+    monkeypatch.setattr(classifier, "_get_pipeline", lambda: _fake_pipeline)
+    df = pd.DataFrame({"title": ["Profit surge"]})
+    out = classifier.score_articles(df)
+    assert out.iloc[0]["model_version"] == classifier.MODEL_NAME
