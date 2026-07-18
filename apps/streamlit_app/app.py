@@ -203,7 +203,10 @@ with tab_backtest:
             "`scripts/run_phase1_smoke.py` to produce one."
         )
     else:
-        st.caption(f"Run date: {result['run_date']}")
+        # run_date is stored normalized to midnight (see backtest/registry.py --
+        # it's a calendar-date dedup key, not a precise timestamp), so
+        # displaying just the date avoids a redundant, misleading "00:00:00".
+        st.caption(f"Run date: {pd.Timestamp(result['run_date']).date()}")
         # Pull only the known metric fields (not e.g. "strategy_id", which
         # incidentally also starts with "strategy_" and would otherwise
         # contaminate this table via naive prefix-stripping).
