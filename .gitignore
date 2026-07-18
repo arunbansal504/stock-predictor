@@ -48,3 +48,7 @@ mlartifacts/
 Thumbs.db
 .vscode/
 .idea/
+
+# Claude Code CLI session state (e.g. scheduled_tasks.lock) -- tool-internal,
+# not project data.
+.claude/
