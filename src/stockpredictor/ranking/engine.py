@@ -66,15 +66,36 @@ def apply_ranking_filters(
     return passed.reset_index(drop=True)
 
 
-def rank_universe(filtered: pd.DataFrame, score_col: str = "score") -> pd.DataFrame:
-    """Assign rank 1 = best (highest score); ties broken by row order."""
+def rank_universe(
+    filtered: pd.DataFrame, score_col: str = "score", tiebreak_col: str | None = "meta_score"
+) -> pd.DataFrame:
+    """Assign rank 1 = best (highest score).
+
+    Ties on `score_col` are broken by `tiebreak_col` (when present), not by
+    row order. This matters because the calibrated score is a genuine step
+    function by construction (isotonic calibration's Pool Adjacent
+    Violators merges any region where the empirical win-rate isn't reliably
+    monotonic into one flat block -- observed live: the whole top of a
+    ranking landing on one identical calibrated value, since there wasn't
+    enough evidence in that sparse tail to honestly separate them).
+    Breaking those ties by row order would produce a rank 1-vs-30 ordering
+    that looks meaningful but carries zero real information. `meta_score`
+    (models/ensemble.py's pre-calibration, continuous meta-learner output)
+    stays genuinely differentiated through that same region, so use it
+    instead. Falls back to row order only if `tiebreak_col` isn't present
+    in `filtered` -- callers that don't have it (e.g. tests using synthetic
+    already-distinct scores) still work, they just don't need a tiebreak."""
     if filtered.empty:
         out = filtered.copy()
         out["rank"] = pd.Series(dtype="int64")
         return out
     out = filtered.copy()
-    out["rank"] = out[score_col].rank(method="first", ascending=False).astype(int)
-    return out.sort_values("rank").reset_index(drop=True)
+    sort_cols = [score_col]
+    if tiebreak_col and tiebreak_col in out.columns:
+        sort_cols.append(tiebreak_col)
+    out = out.sort_values(sort_cols, ascending=False, kind="stable").reset_index(drop=True)
+    out["rank"] = range(1, len(out) + 1)
+    return out
 
 
 def top_n(ranked: pd.DataFrame, n: int) -> pd.DataFrame:

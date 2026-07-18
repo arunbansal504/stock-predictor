@@ -58,15 +58,27 @@ def score_universe(lake: Lake, horizon: str, random_state: int = 42) -> pd.DataF
         return pd.DataFrame()
 
     X = snapshot[feature_cols]
-    scores = model.predict_proba(X)
+    # meta_score computed once and reused for the calibrated score, rather
+    # than also calling model.predict_proba(X) and redoing the same
+    # base-learner inference -- see meta_score's docstring.
+    meta_score = model.meta_score(X)
     disagreement = model.disagreement(X)
+    separation = model.calibrator.separation_info(meta_score)
 
     return pd.DataFrame(
         {
             "symbol": snapshot["symbol"].values,
             "date": snapshot["date"].values,
             "horizon": horizon,
-            "score": scores,
+            "score": model.calibrator.transform(meta_score),
             "disagreement": disagreement,
+            # Pre-calibration ranking tie-break -- see ranking/engine.py's
+            # rank_universe docstring for why this is needed.
+            "meta_score": meta_score,
+            # Calibration-evidence columns -- see IsotonicCalibrator.separation_info.
+            "separation_direction": separation["separation_direction"].to_numpy(),
+            "separation_n": separation["n"].to_numpy(),
+            "separation_empirical_rate": separation["empirical_rate"].to_numpy(),
+            "separation_base_rate": separation["base_rate"].to_numpy(),
         }
     )

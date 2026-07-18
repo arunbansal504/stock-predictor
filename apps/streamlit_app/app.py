@@ -27,6 +27,7 @@ from stockpredictor.backtest.significance import run_significance_report
 from stockpredictor.common.types import DataLayer, RiskProfile
 from stockpredictor.explain.registry import read_explanations
 from stockpredictor.features.sentiment import latest_sentiment_snapshot
+from stockpredictor.models.calibration import SEPARATION_ALPHA, IsotonicCalibrator
 from stockpredictor.monitoring.accuracy import compute_accuracy
 from stockpredictor.portfolio.service import DEFAULT_STRATEGY_ID, construct_portfolio_from_lake
 from stockpredictor.ranking.registry import read_latest_rankings
@@ -89,11 +90,80 @@ with tab_picks:
     else:
         top = ranked[ranked["rank"] <= top_n].copy()
         st.caption(f"As of {top['date'].max().date()}")
-        st.dataframe(
-            top[["rank", "symbol", "score", "disagreement"]].set_index("rank"),
-            use_container_width=True,
-        )
+
+        # `score` stays the primary ranking/display key (rank_universe already
+        # sorts by it) -- everything below is context ON TOP of score, never
+        # a replacement for it.
+        display_cols = ["rank", "symbol", "score", "disagreement"]
+        has_separation = "separation_direction" in top.columns
+        # Background colors keyed by style name, applied to the `confidence`
+        # cell below -- direction-blind styling (treating any "significant"
+        # block as good news regardless of sign) was a real bug here, so the
+        # color is driven by the same `separation_direction`/`separation_badge`
+        # every other surface uses, not re-derived from the boolean alone.
+        BADGE_COLORS = {"positive": "#c6efce", "negative": "#ffc7ce", "neutral": "#f2f2f2"}
+        if has_separation:
+            badges = [
+                IsotonicCalibrator.separation_badge(
+                    row.separation_direction, row.separation_empirical_rate, int(row.separation_n), row.separation_base_rate
+                )
+                for row in top.itertuples()
+            ]
+            top["confidence"] = [b["label"] for b in badges]
+            top["_confidence_style"] = [b["style"] for b in badges]
+            top["empirical_outperform_rate"] = top["separation_empirical_rate"]
+            top["horizon_base_rate"] = top["separation_base_rate"]
+            display_cols += ["confidence", "empirical_outperform_rate", "horizon_base_rate"]
+        has_meta_score = "meta_score" in top.columns
+        if has_meta_score:
+            display_cols.append("meta_score")
+        display = top[display_cols].rename(columns={"meta_score": "relative_strength"}).set_index("rank")
+        if has_separation:
+            styles = top.set_index("rank")["_confidence_style"]
+            styled = display.style.apply(
+                lambda col: [f"background-color: {BADGE_COLORS[styles[idx]]}" for idx in col.index]
+                if col.name == "confidence"
+                else ["" for _ in col.index],
+                axis=0,
+            )
+            st.dataframe(styled, use_container_width=True)
+        else:
+            st.dataframe(display, use_container_width=True)
         st.bar_chart(top.set_index("symbol")["score"])
+
+        if has_separation:
+            n_out = int((top["separation_direction"] == "outperform").sum())
+            n_under = int((top["separation_direction"] == "underperform").sum())
+            n_none = len(top) - n_out - n_under
+            horizon_base_rate = float(top["separation_base_rate"].iloc[0])
+            st.caption(
+                f"**Confidence** reports whether a stock's score sits in a calibration band "
+                f"with a historically real (statistically significant, two-sided p < "
+                f"{SEPARATION_ALPHA}) departure from this horizon's own base rate -- "
+                f"currently **{horizon_base_rate:.1%}** (the fraction of all historical "
+                "calibration-set rows, across the whole universe, that beat the benchmark "
+                "at this horizon; NOT 50%, since a cap-weighted index's return is pulled "
+                "up by its largest names, so most constituents trail it more often than "
+                "not) -- not a fixed coin flip, and in which direction. Green = confirmed "
+                "historical outperformance *relative to that base rate*; red = confirmed "
+                "historical *under*performance relative to it (a negative signal, not a "
+                "weaker positive one); grey = not statistically distinguishable from it. "
+                f"Of the {len(top)} shown here: {n_out} outperform, {n_under} underperform, "
+                f"{n_none} low separation. `score` remains the primary, outcome-calibrated "
+                "ranking signal regardless of this flag. Note: block boundaries are "
+                "data-derived from the calibration set itself, not fixed in advance -- "
+                "treat these p-values as indicative of relative edge, not a formal "
+                "family-wise guarantee."
+            )
+        if has_meta_score:
+            st.caption(
+                "`relative_strength` is **not** a probability and has **not** been validated "
+                "against forward returns -- it's the model's raw, uncalibrated signal, shown "
+                "only because the calibrated `score` can honestly tie across many stocks "
+                "(isotonic calibration collapsing a sparse tail, not a bug -- see "
+                "USER_GUIDE.md). It breaks ties in `rank` so ordering isn't arbitrary, but "
+                "it is not a second opinion of equal weight to `score`."
+            )
 
 with tab_detail:
     ranked = read_latest_rankings(lake, horizon)
@@ -106,6 +176,26 @@ with tab_detail:
         col1.metric("Rank", int(row["rank"]))
         col2.metric("Score (calibrated prob. of outperformance)", f"{row['score']:.3f}")
         col3.metric("Ensemble disagreement", f"{row['disagreement']:.3f}")
+        if "separation_direction" in row.index and pd.notna(row.get("separation_direction")):
+            badge = IsotonicCalibrator.separation_badge(
+                row["separation_direction"],
+                row["separation_empirical_rate"],
+                int(row["separation_n"]),
+                row["separation_base_rate"],
+            )
+            banner_text = f"{badge['label']} (two-sided p < {SEPARATION_ALPHA})."
+            if badge["style"] == "positive":
+                st.success(banner_text)
+            elif badge["style"] == "negative":
+                st.error(banner_text)
+            else:
+                st.info(banner_text)
+        if "meta_score" in row.index and pd.notna(row.get("meta_score")):
+            st.caption(
+                f"Relative strength: {row['meta_score']:.3f} -- an uncalibrated tie-break "
+                "signal that has **not** been validated against forward returns, not a "
+                "probability. See Top Picks tab for why this exists."
+            )
 
         explanations = read_explanations(lake, horizon)
         exp_row = explanations[explanations["symbol"] == symbol] if not explanations.empty else explanations

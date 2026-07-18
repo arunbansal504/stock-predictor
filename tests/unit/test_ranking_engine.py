@@ -87,3 +87,50 @@ def test_top_n_filters_to_requested_count():
     ranked = rank_universe(df)
     top2 = top_n(ranked, 2)
     assert list(top2["symbol"]) == ["A", "B"]
+
+
+def test_rank_universe_breaks_ties_with_meta_score_not_row_order():
+    """Reproduces the exact live bug: isotonic calibration collapses many
+    stocks onto one identical calibrated score (a genuine step function --
+    see models/ensemble.py's meta_score docstring), and the old
+    row-order tie-break (pandas .rank(method="first")) produced a rank
+    ordering that carried zero real information for the tied group. Ties
+    must now follow meta_score (still continuous) instead."""
+    df = pd.DataFrame(
+        {
+            "symbol": ["LOW_META", "HIGH_META", "MID_META"],
+            "score": [0.50, 0.50, 0.50],  # all tied -- the collapse scenario
+            "meta_score": [0.40, 0.60, 0.50],
+        }
+    )
+    ranked = rank_universe(df)
+    assert list(ranked["symbol"]) == ["HIGH_META", "MID_META", "LOW_META"]
+    assert list(ranked["rank"]) == [1, 2, 3]
+
+
+def test_rank_universe_score_still_takes_priority_over_meta_score():
+    """A genuinely better score must still win even against a worse
+    meta_score -- meta_score is only a tiebreaker, not a replacement."""
+    df = pd.DataFrame(
+        {
+            "symbol": ["BETTER_SCORE", "WORSE_SCORE"],
+            "score": [0.60, 0.55],
+            "meta_score": [0.10, 0.90],
+        }
+    )
+    ranked = rank_universe(df)
+    assert list(ranked["symbol"]) == ["BETTER_SCORE", "WORSE_SCORE"]
+
+
+def test_rank_universe_falls_back_to_row_order_without_meta_score_column():
+    """Backward compatible: callers that don't supply meta_score (e.g. a
+    synthetic scenario with already-distinct scores) still work."""
+    df = pd.DataFrame({"symbol": ["A", "B", "C"], "score": [0.5, 0.9, 0.1]})
+    ranked = rank_universe(df)
+    assert list(ranked["symbol"]) == ["B", "A", "C"]
+
+
+def test_rank_universe_stable_row_order_fallback_when_tied_and_no_meta_score():
+    df = pd.DataFrame({"symbol": ["FIRST", "SECOND"], "score": [0.5, 0.5]})
+    ranked = rank_universe(df)
+    assert list(ranked["symbol"]) == ["FIRST", "SECOND"]  # original order preserved

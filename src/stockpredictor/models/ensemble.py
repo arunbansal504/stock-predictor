@@ -119,9 +119,40 @@ class StackedRanker:
         """Calibrated probability of outperformance for each row."""
         if not self._fitted:
             raise RuntimeError("StackedRanker must be fit before predict_proba")
+        return self.calibrator.transform(self.meta_score(X))
+
+    def meta_score(self, X: pd.DataFrame) -> np.ndarray:
+        """The meta-learner's own probability output, *before* isotonic
+        calibration -- a continuous, finer-grained signal than
+        `predict_proba`'s output.
+
+        Isotonic calibration is a genuine step function by construction
+        (Pool Adjacent Violators merges any region where the empirical
+        win-rate isn't reliably monotonic into one flat block), and does
+        exactly that in the sparse, noisy tail of a modest signal -- e.g.
+        observed live, raw scores from ~0.49 to ~0.56 all collapsing onto
+        one calibrated value, because there wasn't enough evidence to
+        honestly distinguish them. That's calibration doing its job
+        correctly, not a bug -- but it means `predict_proba`'s output alone
+        is a poor *ranking* key: dozens of genuinely different stocks can
+        land on the exact same calibrated score. `meta_score` stays
+        continuous through that same region, so ranking/engine.py uses it
+        to break ties meaningfully instead of falling back to arbitrary row
+        order. The calibrated score remains what's shown to the user as
+        the honest probability estimate -- this is only for sort order."""
+        if not self._fitted:
+            raise RuntimeError("StackedRanker must be fit before meta_score")
         meta_features = self._base_predictions(X)
-        raw_scores = self.meta.predict_proba(meta_features)[:, 1]
-        return self.calibrator.transform(raw_scores)
+        return self.meta.predict_proba(meta_features)[:, 1]
+
+    def separation_info(self, X: pd.DataFrame) -> pd.DataFrame:
+        """Per-row calibration evidence backing `predict_proba`'s score --
+        see `IsotonicCalibrator.separation_info` for what each column means.
+        Lets callers show *why* a score should (or shouldn't) be trusted as
+        more than a coin flip, instead of just the score itself."""
+        if not self._fitted:
+            raise RuntimeError("StackedRanker must be fit before separation_info")
+        return self.calibrator.separation_info(self.meta_score(X))
 
     def disagreement(self, X: pd.DataFrame) -> np.ndarray:
         """Absolute difference between base learners' raw scores -- a cheap

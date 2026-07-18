@@ -200,13 +200,25 @@ def task_predict_rank_explain(lake: Lake, horizon: str, top_k: int, top_n_explai
     check_non_empty(snapshot, stage=f"predict[{horizon}]")
 
     X = snapshot[feature_cols]
+    # meta_score computed once and reused for the calibrated score (instead
+    # of also calling model.predict_proba(X), which would silently redo the
+    # same base-learner inference) -- see meta_score's docstring for why the
+    # ranking step also needs this pre-calibration value, not just `score`.
+    meta_score = model.meta_score(X)
+    separation = model.calibrator.separation_info(meta_score)
     scored = pd.DataFrame(
         {
             "symbol": snapshot["symbol"].values,
             "date": snapshot["date"].values,
             "horizon": horizon,
-            "score": model.predict_proba(X),
+            "score": model.calibrator.transform(meta_score),
             "disagreement": model.disagreement(X),
+            "meta_score": meta_score,
+            # Calibration-evidence columns -- see IsotonicCalibrator.separation_info.
+            "separation_direction": separation["separation_direction"].to_numpy(),
+            "separation_n": separation["n"].to_numpy(),
+            "separation_empirical_rate": separation["empirical_rate"].to_numpy(),
+            "separation_base_rate": separation["base_rate"].to_numpy(),
         }
     )
     persist_predictions(lake, scored)

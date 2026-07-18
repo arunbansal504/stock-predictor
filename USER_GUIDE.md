@@ -33,9 +33,10 @@ qualified financial advisor.
 | Term | What it means here |
 |---|---|
 | **Score** | A number between 0 and 1 — the model's *calibrated probability* that this stock will outperform the benchmark over the chosen horizon. A score of 0.52 means: historically, when the model gave stocks a score around 0.52, they beat the benchmark about 52% of the time. It is **not** "52% expected gain" — it's a probability of *beating the market*, which is a much harder bar than just "going up." |
-| **Rank** | The stock's position when every candidate is sorted by score, best first. Rank 1 = highest score that day. |
+| **Rank** | The stock's position when every candidate is sorted by score, best first. Rank 1 = highest score that day. When several stocks share the exact same score (see **Relative strength** below for why that happens honestly), ties are broken by relative strength — not arbitrarily, and not by row order. |
+| **Relative strength** | A second number shown alongside score, used only to order stocks that share the identical score. **It is not a probability** — it's the model's raw, uncalibrated internal signal, before the honesty-check step (calibration) is applied. It's shown because calibration can legitimately give many different stocks the *exact same* score (see Calibration below) — without this number, the ranking among those tied stocks would look arbitrary even though it isn't. Use it only to understand *why* one tied stock outranks another, never as a confidence number on its own. |
 | **Ensemble disagreement** | This app doesn't use one model — it uses several (a tree-based model and a simpler linear one) and blends them. Disagreement measures how much those models *disagree* with each other on this particular stock. Low disagreement = the models broadly agree, which is a mild trust signal. High disagreement = the models see it differently, which is a reason for extra caution, even if the blended score looks good. |
-| **Calibration** | A calibrated score means the number is *honest* — if the model says 0.6, that should really happen about 60% of the time when checked against history. Look at the **Model Transparency** tab to see whether that's actually true for this system right now. |
+| **Calibration** | A calibrated score means the number is *honest* — if the model says 0.6, that should really happen about 60% of the time when checked against history. Look at the **Model Transparency** tab to see whether that's actually true for this system right now. Calibration works by grouping raw predictions into bands with similar historical outcomes — which means many different stocks can legitimately land in the same band and get the *exact same* score, especially near the edges where there's less history to work with. That's calibration being honest about the limits of the evidence, not a bug. |
 
 ### Reading a stock's "why"
 
@@ -199,6 +200,11 @@ not broken.
   the rankings (which refresh nightly), the backtest is a separate,
   manually-run check — the significance numbers reflect whenever it was
   last run, not today's data.
+- **Seeing many stocks with the identical score and assuming the ranking
+  is broken.** It isn't — that's honest calibration legitimately grouping
+  similar predictions together (see Calibration above). The rank order
+  among those tied stocks is still meaningful; check the **relative
+  strength** column to see why one outranks another.
 
 ---
 
