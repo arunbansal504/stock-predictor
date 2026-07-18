@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from stockpredictor.backtest.registry import read_latest_return_calibration
 from stockpredictor.common.types import DataLayer, RiskProfile
+from stockpredictor.features.technical import compute_atr
 from stockpredictor.portfolio.constructor import ConstructedPortfolio, construct_portfolio
 from stockpredictor.ranking.registry import read_latest_rankings
 from stockpredictor.storage.lake import Lake
@@ -38,6 +39,29 @@ def _read_for_symbols(lake: Lake, layer: DataLayer, domain: str, symbols: list[s
     return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
 
 
+def _latest_atr_by_symbol(prices: pd.DataFrame) -> pd.Series:
+    """ATR-14 as of the latest available date per symbol, computed directly
+    from silver prices via the same `compute_atr` the batch feature
+    pipeline uses (features/technical.py) -- not read from a pre-computed
+    gold/features snapshot. That snapshot is fully regenerated from silver
+    every nightly run anyway (no incremental dependency on a prior copy),
+    so persisting it in git just for this one column would mean committing
+    ~250MB of mostly-redundant data every night for no benefit (see
+    .gitignore). `compute_atr` isn't multi-symbol-safe on its own -- its
+    rolling/ewm calculations would blend across symbol boundaries if fed a
+    concatenated multi-symbol frame -- so it's called once per symbol's own
+    date-sorted sub-frame, exactly as features/registry.py's
+    build_technical_features_for_universe does."""
+    if prices.empty:
+        return pd.Series(dtype="float64")
+    values: dict[str, float] = {}
+    for symbol, group in prices.groupby("symbol"):
+        atr = compute_atr(group.sort_values("date"))["atr_14"].dropna()
+        if not atr.empty:
+            values[symbol] = atr.iloc[-1]
+    return pd.Series(values, dtype="float64")
+
+
 def construct_portfolio_from_lake(
     lake: Lake,
     session_factory: sessionmaker[Session],
@@ -58,13 +82,7 @@ def construct_portfolio_from_lake(
     symbols = candidates["symbol"].tolist()
 
     prices = _read_for_symbols(lake, DataLayer.SILVER, "prices", symbols)
-
-    features = _read_for_symbols(lake, DataLayer.GOLD, "features", symbols)
-    if not features.empty:
-        features = features.sort_values("date").groupby("symbol").tail(1)
-        atr_by_symbol = features.set_index("symbol")["atr_14"]
-    else:
-        atr_by_symbol = pd.Series(dtype="float64")
+    atr_by_symbol = _latest_atr_by_symbol(prices)
 
     session = session_factory()
     try:

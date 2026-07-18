@@ -213,14 +213,25 @@ def _seed_portfolio_scenario(tmp_lake, db_sessionmaker, n_symbols=10, horizon="5
     persist_rankings(tmp_lake, rankings, horizon)
 
     dates = pd.bdate_range("2024-01-01", periods=110)
-    price_frames, feature_frames = [], []
     for i, s in enumerate(symbols):
         closes = 100 + np.cumsum(rng.normal(0, 1 + i * 0.1, len(dates)))
-        price_frames.append(pd.DataFrame({"symbol": s, "date": dates, "close_adj": closes}))
-        feature_frames.append(pd.DataFrame({"symbol": [s], "date": [dates[-1]], "atr_14": [2.0 + i * 0.2]}))
-        prices_df = price_frames[-1]
+        # ATR is now computed on demand from silver prices (see
+        # portfolio/service.py's _latest_atr_by_symbol), not read from a
+        # pre-computed gold/features snapshot -- needs real OHLC, not just
+        # close_adj, to exercise the same code path as production.
+        prices_df = pd.DataFrame(
+            {
+                "symbol": s,
+                "date": dates,
+                "open": closes + rng.normal(0, 0.3, len(dates)),
+                "high": closes + rng.uniform(0.5, 1.5, len(dates)),
+                "low": closes - rng.uniform(0.5, 1.5, len(dates)),
+                "close": closes,
+                "close_adj": closes,
+                "volume": 100_000,
+            }
+        )
         tmp_lake.write(prices_df, DataLayer.SILVER, "prices", s, key_cols=["symbol", "date"])
-        tmp_lake.write(feature_frames[-1], DataLayer.GOLD, "features", s, key_cols=["symbol", "date"])
 
     calibration = pd.DataFrame(
         {"decile": [0, 1], "score_min": [0.0, 0.5], "score_max": [0.49, 1.0], "mean_return": [0.01, 0.04], "median_return": [0.01, 0.04], "n_obs": [10, 10]}

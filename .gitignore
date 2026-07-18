@@ -16,14 +16,22 @@ htmlcov/
 
 # Data lake: bronze (raw fetch, regenerated fresh every run -- never
 # accumulated, so nothing is lost by not persisting it) stays local-only.
-# silver/gold and the SQLite app db (securities, run_metadata, and
-# critically the accumulated news/sentiment history, which has no
-# historical backfill source -- see features/sentiment.py) ARE committed:
-# git-as-storage for the GitHub Actions nightly workflow, since Actions
-# runners are ephemeral with no other persistent disk between runs. See
-# "Scheduling" in README.
+# gold/features likewise: fully recomputed from silver every nightly run
+# (no incremental dependency on a prior copy) AND was by far the largest,
+# most git-history-hostile committed artifact (~250MB rewritten wholesale
+# every run, since Parquet doesn't diff well) for a column
+# (portfolio/service.py's ATR lookup) that's now computed on demand from
+# silver/prices instead -- see portfolio/service.py's _latest_atr_by_symbol.
+# silver/ (except bronze-adjacent domains), the rest of gold/, and the
+# SQLite app db (securities, run_metadata, and critically the accumulated
+# news/sentiment history, which has no historical backfill source -- see
+# features/sentiment.py) ARE committed: git-as-storage for the GitHub
+# Actions nightly workflow, since Actions runners are ephemeral with no
+# other persistent disk between runs. See "Scheduling" in README.
 data/bronze/**
 !data/bronze/.gitkeep
+data/gold/features/**
+!data/gold/features/.gitkeep
 
 # Postgres local volume
 infra/pgdata/
