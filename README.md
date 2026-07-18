@@ -5,6 +5,11 @@
 > architecture rationale (including *why* this framing, not a "buy/sell"
 > advisory product) in the design doc referenced below.
 
+**New to trading terminology?** Start with [USER_GUIDE.md](USER_GUIDE.md)
+— a plain-language glossary (score, ATR, Sharpe ratio, etc.) and a
+walkthrough of every screen in the dashboard, written for someone with no
+trading background.
+
 An institutional-inspired, personal-scale system that ranks NSE-listed
 stocks by a **calibrated probability of forward outperformance** vs. a
 benchmark, across multiple horizons — with full explainability (SHAP factor
