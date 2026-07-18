@@ -21,6 +21,23 @@ from stockpredictor.storage.models import Security
 DEFAULT_STRATEGY_ID = "top_k_technical_fundamental_v1"
 
 
+def _read_for_symbols(lake: Lake, layer: DataLayer, domain: str, symbols: list[str]) -> pd.DataFrame:
+    """Read only the given symbols' per-symbol lake files, not the whole
+    universe. The lake already stores one Parquet file per symbol (see
+    storage/lake.py) -- `lake.read_all` (a DuckDB glob over every symbol's
+    file) is the right tool for genuinely cross-sectional reads, but for a
+    top-N candidate list (typically 10-50 symbols out of ~500) it means
+    loading the *entire* universe's full history into memory only to
+    immediately discard 90%+ of it. That's not just slow -- reading the
+    full gold/features table (~250MB, every symbol's 5-year history) for
+    every portfolio request is exactly the kind of memory spike that OOM-
+    kills a request on a resource-constrained host (observed live on
+    Streamlit Community Cloud's free tier)."""
+    frames = [lake.read(layer, domain, s) for s in symbols]
+    frames = [f for f in frames if not f.empty]
+    return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+
+
 def construct_portfolio_from_lake(
     lake: Lake,
     session_factory: sessionmaker[Session],
@@ -40,12 +57,11 @@ def construct_portfolio_from_lake(
     candidates = ranked.sort_values("rank").head(top_n)
     symbols = candidates["symbol"].tolist()
 
-    prices = lake.read_all(DataLayer.SILVER, "prices")
-    prices = prices[prices["symbol"].isin(symbols)] if not prices.empty else prices
+    prices = _read_for_symbols(lake, DataLayer.SILVER, "prices", symbols)
 
-    features = lake.read_all(DataLayer.GOLD, "features")
+    features = _read_for_symbols(lake, DataLayer.GOLD, "features", symbols)
     if not features.empty:
-        features = features[features["symbol"].isin(symbols)].sort_values("date").groupby("symbol").tail(1)
+        features = features.sort_values("date").groupby("symbol").tail(1)
         atr_by_symbol = features.set_index("symbol")["atr_14"]
     else:
         atr_by_symbol = pd.Series(dtype="float64")
