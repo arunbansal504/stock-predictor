@@ -136,9 +136,14 @@ accumulated news/sentiment history would be destroyed every single night
 "News & Sentiment" below), and prices/fundamentals would need a full
 5-year re-fetch every run instead of a cheap incremental one. Git-as-
 storage is the zero-new-infrastructure way to solve that for a personal-
-scale project — see `.gitignore`: `data/bronze/` (raw fetch, regenerated
-fresh every run, never accumulated) stays out of git; `data/silver/`,
-`data/gold/`, and the SQLite app db are committed.
+scale project — see `.gitignore`: `data/bronze/` and `data/gold/features/`
+stay out of git (both fully regenerated from scratch every run with zero
+dependency on a prior committed copy, so persisting them would only add
+git history bloat for no benefit — `gold/features` alone was ~250MB
+rewritten wholesale every night before this was fixed; ATR, its only
+serving-side consumer, is now computed on demand from `silver/prices` via
+`portfolio/service.py`'s `_latest_atr_by_symbol`). The rest of `data/silver/`
+and `data/gold/`, plus the SQLite app db, are committed.
 
 Setup: push this repo to GitHub (already done if you're reading this from
 there) — the workflow runs automatically on the schedule once merged to
