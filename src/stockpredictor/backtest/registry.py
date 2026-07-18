@@ -49,6 +49,10 @@ def persist_backtest_result(
     )
     calibration = return_calibration if return_calibration is not None else pd.DataFrame()
 
+    ic_series_records = [
+        {"date": str(d), "ic": v} for d, v in result.ic_by_date.items() if not pd.isna(v)
+    ]
+
     row = {
         "strategy_id": strategy_id,
         "horizon": horizon,
@@ -58,6 +62,14 @@ def persist_backtest_result(
         "mean_ic": float(result.ic_by_date.mean()) if not result.ic_by_date.empty else float("nan"),
         "equity_curve": json.dumps(curve.to_dict(orient="records")),
         "return_calibration": json.dumps(calibration.to_dict(orient="records")),
+        # The per-date IC series, not just its mean -- needed for
+        # significance/robustness testing (backtest/significance.py):
+        # whether the mean IC is distinguishable from noise, whether it's
+        # stable across sub-periods, etc. all require the underlying
+        # distribution, not a single summary number. Same JSON-blob
+        # convention as equity_curve, for the same reason (a variable-length
+        # series doesn't belong as a raw Parquet column).
+        "ic_series": json.dumps(ic_series_records),
     }
     df = pd.DataFrame([row])
     rows = lake.write(df, DataLayer.GOLD, GOLD_DOMAIN, strategy_id, key_cols=GOLD_KEY_COLS)
@@ -73,6 +85,10 @@ def read_backtest_results(lake: Lake, strategy_id: str) -> pd.DataFrame:
     df["equity_curve"] = df["equity_curve"].apply(json.loads)
     if "return_calibration" in df.columns:
         df["return_calibration"] = df["return_calibration"].apply(json.loads)
+    if "ic_series" in df.columns:
+        # Rows persisted before this field existed have NaN here, not "[]"
+        # -- guard rather than let json.loads(nan) raise.
+        df["ic_series"] = df["ic_series"].apply(lambda v: json.loads(v) if isinstance(v, str) else [])
     return df
 
 
@@ -85,6 +101,19 @@ def read_latest_backtest_result(lake: Lake, strategy_id: str, horizon: str) -> d
         return None
     latest = df.sort_values("run_date").iloc[-1]
     return latest.to_dict()
+
+
+def read_latest_ic_series(lake: Lake, strategy_id: str, horizon: str) -> pd.Series:
+    """The latest backtest run's per-date IC series (see
+    backtest/significance.py for what this is used for), indexed by date.
+    Empty series (not None) if no backtest result exists yet or it
+    predates this field being added -- callers should treat that the same
+    as "not enough data to test significance," not an error."""
+    result = read_latest_backtest_result(lake, strategy_id, horizon)
+    if result is None or not result.get("ic_series"):
+        return pd.Series(dtype="float64")
+    records = result["ic_series"]
+    return pd.Series({r["date"]: r["ic"] for r in records})
 
 
 def read_latest_return_calibration(lake: Lake, strategy_id: str, horizon: str) -> pd.DataFrame:

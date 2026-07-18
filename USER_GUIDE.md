@@ -92,6 +92,12 @@ A **backtest** simulates how a strategy *would have* performed on past data it w
 | **Win rate** | The fraction of rebalance periods where the strategy had a positive return. |
 | **n_periods** | How many independent time periods the backtest actually covers — a small number here means take everything else with extra caution; there just isn't much history yet to be confident in. |
 | **Information Coefficient (IC)** | A single number (roughly -1 to +1) measuring how well the score's *ranking* of stocks lined up with what actually happened. In real-world quant finance, an IC around 0.03–0.05 is considered a genuinely useful, if modest, edge — this isn't a game where 0.5+ is realistic; anything close to that would be a red flag for a bug (leaked future data), not a win. |
+| **p-value** | The probability of seeing an edge this good (or better) purely by random chance, if there were actually *no* real signal at all. Smaller is stronger evidence — under 0.05 is the usual line for calling something "statistically significant." A mean IC that *looks* positive but has a large p-value (say, 0.4) is a coin flip dressed up as a result. |
+| **Statistically significant** | Shorthand for "the p-value cleared that 0.05 bar" — the result probably isn't just noise. It does **not** mean the edge is large, guaranteed, or will persist; a small, real edge and a large, fake one can both clear this bar. |
+| **95% confidence interval (CI)** | A range of plausible values for the *true* IC, given the data available. If the range doesn't include zero (e.g. "+0.004 to +0.029"), that's consistent with a real, if modest, edge. This app reports two versions that should roughly agree: one from a standard t-test, and one from bootstrapping (below) — agreement between the two is itself a good sign. |
+| **Bootstrap** | A way of double-checking the p-value/CI *without* assuming the results follow a textbook bell curve — it resamples the actual historical results thousands of times and sees how often a real edge would still show up. Shown as "% of resamples ≤ 0": a low number means it was rare, in resampling, for the edge to disappear or flip negative. |
+| **Sub-period stability** | Splits the backtest history into chunks (e.g. first half vs. second half) and checks whether the edge shows up in *both*, not just one lucky stretch. A mean IC built from one great period and one terrible one is much weaker evidence than the same average built from two steady, similar periods. |
+| **Autocorrelation** | Checks whether consecutive backtest periods are secretly echoing each other rather than being independent measurements. High autocorrelation would mean the "195 periods" behind a result are worth fewer than 195 genuinely independent pieces of evidence, making the p-value overconfident. Low (near zero) is the reassuring answer. |
 | **Equity curve** | A chart of ₹1 growing (or shrinking) over time if you'd followed the strategy versus just holding the benchmark — the visual version of CAGR/Sharpe. |
 
 ### The Model Transparency screen
@@ -131,7 +137,11 @@ it" screen — again, illustrative, not an instruction.
 
 **Backtest Lab** — the honesty check: how would this exact strategy have
 performed historically, compared to just holding the index? Look at this
-*before* trusting anything else on the other screens.
+*before* trusting anything else on the other screens. Below the metrics
+table, a "Is that IC actually distinguishable from noise?" panel runs the
+p-value/confidence-interval/bootstrap/sub-period checks described above —
+this is the single most important box on the whole dashboard to actually
+read, not skim past.
 
 **Model Transparency** — the calibration check: are the scores actually
 meaningful yet, based on resolved history? Early on (few resolved
@@ -181,6 +191,14 @@ not broken.
   news/sentiment panel is real, live data — it's just not (yet) proven to
   improve the score, so it's shown separately rather than silently baked
   in without evidence.
+- **Trusting a positive mean IC without checking its p-value.** A small
+  positive number averaged over a modest number of periods can easily be
+  noise. The Backtest Lab's significance panel exists specifically so you
+  don't have to take "the average was positive" on faith.
+- **Note: the Backtest Lab's numbers don't update every night.** Unlike
+  the rankings (which refresh nightly), the backtest is a separate,
+  manually-run check — the significance numbers reflect whenever it was
+  last run, not today's data.
 
 ---
 

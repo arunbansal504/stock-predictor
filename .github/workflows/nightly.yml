@@ -63,5 +63,33 @@ jobs:
           git add data/
           git diff --staged --quiet && echo "No data changes to commit" && exit 0
           git commit -m "Nightly data update $(date -u +%Y-%m-%dT%H:%M:%SZ) [skip ci]"
-          git pull --rebase origin main
+
+          # A plain `git pull --rebase` fails hard on a modify/delete
+          # conflict (observed live: a run whose checkout predated a
+          # data-tracking change -- e.g. excluding gold/features -- still
+          # has that path tracked locally, so its own fresh recompute
+          # "modifies" a file main has since deleted, and rebase can't
+          # reconcile that automatically). `-X ours`/`-X theirs` do NOT
+          # help here either -- verified locally -- those strategy options
+          # only resolve line-level text conflicts, not file add/delete
+          # conflicts. So: merge instead of rebase, and if it conflicts,
+          # resolve every conflicted path by keeping whichever side THIS
+          # run's own commit has (present -> keep our content; absent ->
+          # keep it deleted). This run just spent up to ~2.5 hours
+          # recomputing the full universe -- its data/ state is always the
+          # authoritative "latest," so this is a correct policy for this
+          # single-writer, fully-regenerated-each-run dataset, not just an
+          # expedient one.
+          git fetch origin main
+          if ! git merge origin/main --no-edit -m "Merge origin/main into nightly data commit"; then
+            git diff --name-only --diff-filter=U | while IFS= read -r f; do
+              if git cat-file -e "HEAD:$f" 2>/dev/null; then
+                git checkout --ours -- "$f"
+                git add "$f"
+              else
+                git rm -f -q "$f"
+              fi
+            done
+            git commit --no-edit
+          fi
           git push origin main

@@ -8,6 +8,7 @@ from stockpredictor.backtest.registry import (
     persist_backtest_result,
     read_backtest_results,
     read_latest_backtest_result,
+    read_latest_ic_series,
     read_latest_return_calibration,
 )
 
@@ -77,4 +78,55 @@ def test_read_latest_return_calibration_empty_when_no_backtest(tmp_lake):
 def test_read_latest_return_calibration_empty_when_not_provided(tmp_lake):
     persist_backtest_result(tmp_lake, _result(), horizon="5d", strategy_id="top_k_v1", run_date=pd.Timestamp("2024-01-01"))
     out = read_latest_return_calibration(tmp_lake, "top_k_v1", "5d")
+    assert out.empty
+
+
+def test_persist_and_read_ic_series_roundtrip(tmp_lake):
+    persist_backtest_result(tmp_lake, _result(), horizon="5d", strategy_id="top_k_v1", run_date=pd.Timestamp("2024-01-01"))
+    ic_series = read_latest_ic_series(tmp_lake, "top_k_v1", "5d")
+    assert list(ic_series.values) == pytest.approx([0.1, 0.2])
+    assert list(ic_series.index) == ["d1", "d2"]
+
+
+def test_ic_series_drops_nan_values_not_fabricate_them(tmp_lake):
+    idx = pd.Index(["d1", "d2", "d3"], name="date")
+    result = BacktestResult(
+        per_period_returns=pd.Series([0.02, 0.01, 0.0], index=idx),
+        benchmark_returns=pd.Series([0.01, 0.005, 0.0], index=idx),
+        ic_by_date=pd.Series([0.1, float("nan"), 0.3], index=idx),
+        metrics={"cagr": 0.15, "n_periods": 3},
+        benchmark_metrics={"cagr": 0.08, "n_periods": 3},
+    )
+    persist_backtest_result(tmp_lake, result, horizon="5d", strategy_id="top_k_v1", run_date=pd.Timestamp("2024-01-01"))
+    ic_series = read_latest_ic_series(tmp_lake, "top_k_v1", "5d")
+    assert len(ic_series) == 2  # the NaN date is dropped, not turned into 0.0 or similar
+    assert list(ic_series.values) == pytest.approx([0.1, 0.3])
+
+
+def test_read_latest_ic_series_empty_when_no_backtest(tmp_lake):
+    out = read_latest_ic_series(tmp_lake, "nope", "5d")
+    assert out.empty
+
+
+def test_read_latest_ic_series_empty_for_row_predating_the_field(tmp_lake):
+    """Backward compatibility: a backtest result persisted before ic_series
+    existed has no such column at all -- must degrade to empty, not raise."""
+    df = pd.DataFrame(
+        [
+            {
+                "strategy_id": "top_k_v1",
+                "horizon": "5d",
+                "run_date": pd.Timestamp("2024-01-01"),
+                "strategy_cagr": 0.1,
+                "benchmark_cagr": 0.05,
+                "mean_ic": 0.05,
+                "equity_curve": "[]",
+                "return_calibration": "[]",
+            }
+        ]
+    )
+    from stockpredictor.common.types import DataLayer
+
+    tmp_lake.write(df, DataLayer.GOLD, "backtests", "top_k_v1", key_cols=["strategy_id", "horizon", "run_date"])
+    out = read_latest_ic_series(tmp_lake, "top_k_v1", "5d")
     assert out.empty

@@ -84,6 +84,14 @@ LLM, or Telegram alerts (see comments in that file).
   transaction-cost model, non-overlapping rebalance-date subsampling
   (`select_rebalance_dates`), and standard metrics (CAGR, Sharpe, Sortino,
   Calmar, max drawdown, hit-rate-by-decile, information coefficient).
+  `backtest/significance.py` goes one step further than reporting a mean
+  IC: a t-test against "mean IC is actually zero," a distribution-free
+  bootstrap confidence interval, sub-period stability (is the edge steady
+  or one lucky stretch?), and a lag-1 autocorrelation check (sanity-checks
+  the t-test's independence assumption) — surfaced in the Backtest Lab
+  tab. Not run by the nightly pipeline (which never re-runs the
+  walk-forward backtest at all) — only when a backtest script
+  (`scripts/run_phase1_smoke.py`) is run manually.
 - **Explainability** (`explain/`): SHAP on the LightGBM base learner,
   aggregated into factor blocks (Momentum/Trend, Oscillators,
   Volatility/Risk, Volume/Liquidity, Fundamental/Quality) with top

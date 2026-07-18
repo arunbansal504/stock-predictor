@@ -22,7 +22,8 @@ import pandas as pd
 import streamlit as st
 
 from stockpredictor.backtest.engine import METRIC_NAMES
-from stockpredictor.backtest.registry import read_latest_backtest_result
+from stockpredictor.backtest.registry import read_latest_backtest_result, read_latest_ic_series
+from stockpredictor.backtest.significance import run_significance_report
 from stockpredictor.common.types import DataLayer, RiskProfile
 from stockpredictor.explain.registry import read_explanations
 from stockpredictor.features.sentiment import latest_sentiment_snapshot
@@ -210,6 +211,59 @@ with tab_backtest:
         )
         st.dataframe(metrics_df, use_container_width=True)
         st.caption(f"Mean Information Coefficient across test dates: {result['mean_ic']:.4f}")
+
+        ic_series = read_latest_ic_series(lake, strategy_id, horizon)
+        if len(ic_series) >= 2:
+            report = run_significance_report(ic_series)
+            ttest, bootstrap = report["ttest"], report["bootstrap"]
+            st.markdown("**Is that IC actually distinguishable from noise?**")
+            c1, c2, c3 = st.columns(3)
+            c1.metric("t-test p-value", f"{ttest['p_value']:.3f}")
+            c2.metric(
+                "95% CI (t-test)",
+                f"{ttest['ci_low']:+.4f} to {ttest['ci_high']:+.4f}",
+            )
+            c3.metric(
+                "Bootstrap: resamples ≤ 0",
+                f"{bootstrap['fraction_non_positive']:.1%}",
+            )
+            if not ttest["significant_at_5pct"]:
+                st.warning(
+                    f"Not statistically significant at the 5% level (p={ttest['p_value']:.3f}, "
+                    f"n={ttest['n_periods']} periods) -- the confidence interval straddles zero, "
+                    "so this mean IC could plausibly be noise rather than real signal."
+                )
+            else:
+                st.success(
+                    f"Statistically significant at the 5% level (p={ttest['p_value']:.3f}, "
+                    f"n={ttest['n_periods']} periods)."
+                )
+
+            with st.expander("Robustness detail (sub-period stability, autocorrelation)"):
+                subperiods = report["subperiods"]
+                if not subperiods.empty:
+                    st.markdown("**Sub-period stability** -- is the edge steady, or one lucky stretch?")
+                    st.dataframe(subperiods.set_index("period"), use_container_width=True)
+                    consistent = report["consistent_sign_across_subperiods"]
+                    if consistent is False:
+                        st.caption(
+                            "Sub-periods disagree on direction -- the overall mean IC is being pulled "
+                            "by an inconsistent signal, weaker evidence than a steady edge throughout."
+                        )
+                    elif consistent is True:
+                        st.caption("Every sub-period has the same sign as the overall mean -- a mildly reassuring sign.")
+                autocorr = report["lag1_autocorrelation"]
+                if not pd.isna(autocorr):
+                    st.caption(
+                        f"Lag-1 autocorrelation of the IC series: {autocorr:+.3f}. Rebalance dates are "
+                        "already non-overlapping, but a high value here means the periods aren't fully "
+                        "independent, and the p-value above should be read as optimistic, not corrected for it."
+                    )
+        else:
+            st.caption(
+                "Not enough persisted per-date IC history yet to test statistical significance "
+                "(needs a backtest run after this feature was added)."
+            )
 
         curve = pd.DataFrame(result["equity_curve"])
         if not curve.empty:
