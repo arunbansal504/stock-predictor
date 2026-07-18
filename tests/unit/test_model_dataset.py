@@ -5,14 +5,14 @@ import pandas as pd
 
 from stockpredictor.common.types import DataLayer
 from stockpredictor.models import dataset
-from stockpredictor.features.registry import GOLD_DOMAIN as FEATURES_DOMAIN, TECHNICAL_FEATURE_COLUMNS
+from stockpredictor.features.registry import ALL_FEATURE_COLUMNS, GOLD_DOMAIN as FEATURES_DOMAIN
 from stockpredictor.labels.registry import GOLD_DOMAIN as LABELS_DOMAIN
 
 
 def _seed_features(tmp_lake, symbol: str, n: int = 10) -> None:
     dates = pd.bdate_range("2024-01-01", periods=n)
     data = {"symbol": [symbol] * n, "date": dates}
-    for col in TECHNICAL_FEATURE_COLUMNS:
+    for col in ALL_FEATURE_COLUMNS:
         data[col] = np.linspace(0, 1, n)
         data[f"{col}_xrank"] = np.linspace(0, 1, n)
     df = pd.DataFrame(data)
@@ -70,4 +70,4 @@ def test_get_feature_columns_cross_sectional_vs_raw():
     xrank_cols = dataset.get_feature_columns(use_cross_sectional=True)
     raw_cols = dataset.get_feature_columns(use_cross_sectional=False)
     assert all(c.endswith("_xrank") for c in xrank_cols)
-    assert raw_cols == list(TECHNICAL_FEATURE_COLUMNS)
+    assert raw_cols == list(ALL_FEATURE_COLUMNS)

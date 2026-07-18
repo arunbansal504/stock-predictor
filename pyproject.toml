@@ -23,10 +23,26 @@ dependencies = [
     "fastapi>=0.111",
     "uvicorn>=0.30",
     "streamlit>=1.35",
+    "scipy>=1.11",
+    "feedparser>=6.0",
 ]
 
 [project.optional-dependencies]
 postgres = ["psycopg2-binary>=2.9"]
+# The FinBERT model itself (sentiment/classifier.py) only, not
+# feedparser -- transformers/torch alone are ~1-2GB and the *serving* side
+# (apps/streamlit_app, api/) never imports them (verified: classifier.py
+# only imports transformers lazily inside a function, and every test
+# monkeypatches that function rather than loading a real model, so the full
+# test suite runs without this extra installed at all). Kept separate so
+# the nightly batch/ingestion workflow installs it but Streamlit Community
+# Cloud's lean requirements.txt doesn't -- it would otherwise blow that
+# free tier's build/resource limits for a dependency it never uses at
+# serving time.
+sentiment = [
+    "transformers>=4.42",
+    "torch>=2.4",
+]
 dev = [
     "pytest>=8.0",
     "pytest-cov>=5.0",

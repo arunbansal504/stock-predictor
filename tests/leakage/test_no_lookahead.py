@@ -15,6 +15,8 @@ import pandas as pd
 import pytest
 
 from stockpredictor.common.pit import assert_pit_safe, latest_knowable_as_of
+from stockpredictor.features.fundamental import build_fundamental_features_for_symbol
+from stockpredictor.features.sentiment import build_sentiment_features_for_symbol
 from stockpredictor.ingestion.prices import bronze_to_silver
 from stockpredictor.labels.returns import build_labels_for_symbol
 
@@ -109,3 +111,79 @@ def test_walk_forward_training_cutoff_must_respect_label_embargo():
     assert len(embargoed_train_set) < len(naive_train_set)
     assert (embargoed_train_set["label_valid_date"] <= train_cutoff).all()
     assert embargoed_train_set["label_valid_date"].notna().all()
+
+
+def test_fundamental_features_naive_period_end_join_would_leak_vs_knowable_date_join():
+    """Demonstrates the exact bug class connectors/fundamentals_yfinance.py
+    and features/fundamental.py were built to avoid: annual results for
+    fiscal year ending 2024-03-31 aren't public until ~2024-05-01 (a ~1
+    month reporting lag, realistic for a mid-cap). A naive join on
+    period_end would apply the new (better) ROE to dates in April where the
+    market only knew the old figures -- exactly the kind of leak that makes
+    a backtest look too good for reasons that have nothing to do with the
+    model.
+    """
+    fundamentals = pd.DataFrame(
+        [
+            {
+                "symbol": "AAA", "period_end": pd.Timestamp("2023-03-31"), "knowable_date": pd.Timestamp("2023-05-01"),
+                "revenue": 1000.0, "net_income": 50.0, "eps": 5.0,
+                "total_equity": 500.0, "total_debt": 100.0, "total_assets": 900.0, "shares_outstanding": 10.0,
+            },
+            {
+                "symbol": "AAA", "period_end": pd.Timestamp("2024-03-31"), "knowable_date": pd.Timestamp("2024-05-01"),
+                "revenue": 1500.0, "net_income": 150.0, "eps": 15.0,  # a much stronger year
+                "total_equity": 600.0, "total_debt": 90.0, "total_assets": 1000.0, "shares_outstanding": 10.0,
+            },
+        ]
+    )
+    prices = pd.DataFrame(
+        {"symbol": ["AAA"] * 3, "date": pd.to_datetime(["2024-04-05", "2024-04-15", "2024-05-05"]), "close_adj": 100.0}
+    )
+
+    # WRONG approach: filter fundamentals on period_end <= as_of, ignoring
+    # when results actually became public.
+    as_of = pd.Timestamp("2024-04-15")  # after FY2024's period end, before its announcement
+    naive_leaked = fundamentals.loc[fundamentals["period_end"] <= as_of]
+    assert len(naive_leaked) == 2  # includes the not-yet-announced FY2024 figures -- a leak
+
+    # CORRECT: the PIT-safe as-of merge our feature code actually uses.
+    correct = build_fundamental_features_for_symbol(prices, fundamentals).set_index("date")
+    still_old_year = correct.loc[pd.Timestamp("2024-04-15")]
+    assert still_old_year["roe"] == pytest.approx(50.0 / 500.0)  # FY2023 figure, not the stronger FY2024 one
+
+    after_announcement = correct.loc[pd.Timestamp("2024-05-05")]
+    assert after_announcement["roe"] == pytest.approx(150.0 / 600.0)  # now correctly updated
+
+
+def test_sentiment_features_naive_full_window_mean_would_leak_vs_backward_only_rolling():
+    """Demonstrates the bug class features/sentiment.py's backward-looking
+    `.rolling()` is built to avoid: a naive "mean sentiment over the whole
+    known news table" computed once and reused for every trading date would
+    silently include articles published *after* that date -- exactly the
+    kind of leak that makes a backtest look artificially prescient before
+    news the market hadn't seen yet actually broke.
+    """
+    dates = pd.bdate_range("2026-06-01", periods=10)
+    prices = pd.DataFrame({"symbol": ["AAA"] * 10, "date": dates, "close_adj": 100.0})
+    early_date = dates[1]
+    late_date = dates[-1]
+
+    news = pd.DataFrame(
+        [
+            {"published_date": early_date.date(), "sentiment_score": -1.0},  # bad news early on
+            {"published_date": late_date.date(), "sentiment_score": 1.0},  # great news breaks much later
+        ]
+    )
+
+    # WRONG approach: a single mean over the whole news table, applied to
+    # every date regardless of when each article was actually published.
+    naive_mean_all_dates = news["sentiment_score"].mean()
+    assert naive_mean_all_dates == 0.0  # blends in the future-good-news for every date, including early_date
+
+    # CORRECT: the PIT-safe backward-only rolling aggregate our feature code
+    # actually uses -- as of early_date, the late-breaking good news simply
+    # doesn't exist yet.
+    correct = build_sentiment_features_for_symbol(prices, news).set_index("date")
+    as_of_early = correct.loc[early_date]
+    assert as_of_early["news_sentiment_5d"] == pytest.approx(-1.0)  # only the early bad news was knowable

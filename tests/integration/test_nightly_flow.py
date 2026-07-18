@@ -13,7 +13,9 @@ import pandas as pd
 from sqlalchemy import select
 
 import stockpredictor.ingestion.corporate_actions as ca_ingestion
+import stockpredictor.ingestion.fundamentals as fundamentals_ingestion
 import stockpredictor.ingestion.macro as macro_ingestion
+import stockpredictor.ingestion.news as news_ingestion
 import stockpredictor.ingestion.prices as prices_ingestion
 import stockpredictor.ingestion.universe as universe_ingestion
 from stockpredictor.common.config import Settings
@@ -71,6 +73,47 @@ def _fake_corporate_actions(symbols, exchange="NSE"):
     return pd.DataFrame(columns=["symbol", "action_type", "ex_date", "knowable_date", "ratio", "value"])
 
 
+def _fake_fundamentals(symbol, exchange="NSE"):
+    return pd.DataFrame(
+        [
+            {
+                "symbol": symbol,
+                "period_end": pd.Timestamp("2023-03-31").date(),
+                "knowable_date": pd.Timestamp("2023-05-01").date(),
+                "revenue": 1000.0,
+                "net_income": 100.0,
+                "eps": 10.0,
+                "total_equity": 500.0,
+                "total_debt": 200.0,
+                "total_assets": 1000.0,
+                "shares_outstanding": 10.0,
+            }
+        ]
+    )
+
+
+def _fake_news(symbol, company_name):
+    return pd.DataFrame(
+        [
+            {
+                "symbol": symbol,
+                "published_date": pd.Timestamp("2026-07-17").date(),
+                "title": f"{company_name} reports strong results",
+                "summary": "Synthetic test article.",
+                "url": f"https://example.com/{symbol}",
+                "source": "Test Wire",
+            }
+        ]
+    )
+
+
+def _fake_score_articles(articles, text_col="title"):
+    out = articles.copy()
+    out["sentiment_score"] = 0.5
+    out["sentiment_label"] = "positive"
+    return out
+
+
 def test_nightly_pipeline_runs_end_to_end_and_records_success(tmp_path, monkeypatch):
     lake = Lake(root=tmp_path / "lake")
     engine = make_engine(Settings(database_url=f"sqlite:///{tmp_path / 'app.db'}"))
@@ -86,6 +129,9 @@ def test_nightly_pipeline_runs_end_to_end_and_records_success(tmp_path, monkeypa
     monkeypatch.setattr(macro_ingestion.macro_yfinance, "fetch_macro_series", _fake_macro)
     monkeypatch.setattr(ca_ingestion, "fetch_corporate_actions", _fake_corporate_actions)
     monkeypatch.setattr(universe_ingestion, "fetch_nifty500_constituents", _fake_nse_universe)
+    monkeypatch.setattr(fundamentals_ingestion, "fetch_fundamentals", _fake_fundamentals)
+    monkeypatch.setattr(news_ingestion, "fetch_news_for_symbol", _fake_news)
+    monkeypatch.setattr(news_ingestion, "score_articles", _fake_score_articles)
 
     run_id = nightly_flow.nightly_pipeline(
         years_of_history=1, horizons={"5d": 5}, top_k=3, top_n_explain=5
@@ -102,6 +148,8 @@ def test_nightly_pipeline_runs_end_to_end_and_records_success(tmp_path, monkeypa
     assert statuses, "no run_metadata rows were recorded"
     assert all(status == "success" for status in statuses.values()), statuses
     assert "sync_universe" in statuses
+    assert "ingest_fundamentals" in statuses
+    assert "ingest_news" in statuses
     assert "build_features" in statuses
     assert "build_labels" in statuses
     assert "predict_rank_explain[5d]" in statuses

@@ -7,16 +7,20 @@ inline. Every response carries the research/education disclaimer (§1, §15).
 
 from __future__ import annotations
 
+import dataclasses
 from typing import Any
 
 from fastapi import Depends, FastAPI, HTTPException, Query
+from pydantic import BaseModel
 from sqlalchemy.orm import Session, sessionmaker
 
 from stockpredictor.api.dependencies import get_db_sessionmaker, get_lake
 from stockpredictor.backtest.registry import read_latest_backtest_result
+from stockpredictor.common.types import RiskProfile
 from stockpredictor.explain.registry import read_explanations
 from stockpredictor.monitoring.accuracy import compute_accuracy
 from stockpredictor.monitoring.run_status import get_latest_run_summary, get_recent_runs
+from stockpredictor.portfolio.service import DEFAULT_STRATEGY_ID, construct_portfolio_from_lake
 from stockpredictor.ranking.registry import read_latest_rankings
 from stockpredictor.storage.lake import Lake
 
@@ -34,6 +38,14 @@ app = FastAPI(
 
 def _envelope(data: Any) -> dict:
     return {"data": data, "disclaimer": DISCLAIMER}
+
+
+class PortfolioConstructRequest(BaseModel):
+    horizon: str = "5d"
+    top_n: int = 10
+    risk_profile: RiskProfile = RiskProfile.BALANCED
+    strategy_id: str = DEFAULT_STRATEGY_ID
+    lookback_days: int = 90
 
 
 @app.get("/health")
@@ -106,6 +118,25 @@ def get_backtest(strategy_id: str, horizon: str = "5d", lake: Lake = Depends(get
         )
     result["run_date"] = str(result["run_date"])
     return _envelope(result)
+
+
+@app.post("/portfolio/construct")
+def post_portfolio_construct(
+    request: PortfolioConstructRequest,
+    lake: Lake = Depends(get_lake),
+    sessionmaker_: sessionmaker[Session] = Depends(get_db_sessionmaker),
+) -> dict:
+    """§12: turns the current Top-N ranking into an illustrative research
+    portfolio (HRP allocation, risk-profile caps, stop-loss/target). Not
+    model inference -- a deterministic optimization over already-published
+    rankings, safe to compute on demand (see portfolio/constructor.py)."""
+    portfolio = construct_portfolio_from_lake(
+        lake, sessionmaker_, request.horizon, request.risk_profile, request.top_n,
+        request.strategy_id, request.lookback_days,
+    )
+    if portfolio is None:
+        raise HTTPException(status_code=404, detail=f"No rankings available for horizon={request.horizon}")
+    return _envelope(dataclasses.asdict(portfolio))
 
 
 @app.get("/monitoring/runs")

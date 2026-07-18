@@ -14,21 +14,22 @@ htmlcov/
 .env
 *.local.yaml
 
-# Data lake (never commit data artifacts)
+# Data lake: bronze (raw fetch, regenerated fresh every run -- never
+# accumulated, so nothing is lost by not persisting it) stays local-only.
+# silver/gold and the SQLite app db (securities, run_metadata, and
+# critically the accumulated news/sentiment history, which has no
+# historical backfill source -- see features/sentiment.py) ARE committed:
+# git-as-storage for the GitHub Actions nightly workflow, since Actions
+# runners are ephemeral with no other persistent disk between runs. See
+# "Scheduling" in README.
 data/bronze/**
-data/silver/**
-data/gold/**
 !data/bronze/.gitkeep
-!data/silver/.gitkeep
-!data/gold/.gitkeep
-*.duckdb
-*.parquet
-*.db
-*.sqlite
-*.sqlite3
 
 # Postgres local volume
 infra/pgdata/
+
+# Scheduled-run logs (scripts/run_nightly.ps1) -- rotated locally, not versioned
+data/logs/
 
 # MLflow
 mlruns/

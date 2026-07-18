@@ -8,29 +8,41 @@
 An institutional-inspired, personal-scale system that ranks NSE-listed
 stocks by a **calibrated probability of forward outperformance** vs. a
 benchmark, across multiple horizons — with full explainability (SHAP factor
-attribution), walk-forward backtesting, and honest calibration reporting.
-Built lean and free-tier by design: `yfinance` for data, DuckDB/Parquet +
-SQLite for storage, LightGBM + a linear baseline for modeling, Prefect for
+attribution), walk-forward backtesting, honest calibration reporting, and
+a Portfolio Constructor (HRP allocation, risk-profile position/sector caps,
+ATR stop-loss/target). Built lean and free-tier by design: `yfinance` for
+data, Google News RSS + a local FinBERT model for news/sentiment, DuckDB/Parquet
++ SQLite for storage, LightGBM + a linear baseline for modeling, Prefect for
 orchestration, FastAPI + Streamlit for serving.
 
-This is **Phase 1** of a phased roadmap (see the architecture document) —
-an "Honest EOD Ranker": end-of-day batch, technical features only, real
-NIFTY 500 universe (fetched live from NSE each run — see "Universe" below).
-Fundamentals, news/sentiment, options data, and the full Portfolio
-Optimizer are later phases, deliberately deferred rather than half-built.
+This is **Phase 1(+)** of a phased roadmap (see the architecture document)
+— an "Honest EOD Ranker" over the real, live NIFTY 500 universe (fetched
+from NSE each run — see "Universe" below), now also incorporating annual
+fundamentals (PE/PB/ROE/ROA/D-E/net margin, PIT-correct) alongside the
+technical feature set, plus a Portfolio Constructor on top of the ranking.
+News + FinBERT sentiment scoring now runs nightly too (see "News &
+Sentiment" below) and powers a live per-stock panel, though it isn't yet a
+trained-model feature. Options data remains later-phase, deliberately
+deferred rather than half-built.
 
 ## Quickstart
 
 ```bash
 python -m venv .venv
-.venv/Scripts/pip install -e ".[dev]"          # Windows
-# .venv/bin/pip install -e ".[dev]"             # macOS/Linux
+.venv/Scripts/pip install -e ".[dev,sentiment]"    # Windows
+# .venv/bin/pip install -e ".[dev,sentiment]"       # macOS/Linux
+# `sentiment` pulls in transformers/torch (~1-2GB) for the FinBERT news
+# scorer -- only needed to run ingestion; the full test suite and the
+# dashboard both run fine without it (`.[dev]`), see pyproject.toml.
 
 # Run the tests (no network required — everything's mocked)
 .venv/Scripts/python -m pytest -q
 
 # Run the full nightly pipeline against live data (universe -> prices ->
-# features -> labels -> predict -> rank -> explain). Takes a few minutes.
+# features -> labels -> news/sentiment -> predict -> rank -> explain).
+# A first run over the full ~500-symbol universe takes well over an hour
+# (mostly per-symbol news fetch + FinBERT scoring); see "Scheduling" below
+# to run this unattended instead of watching it live.
 .venv/Scripts/python -c "from stockpredictor.orchestration.nightly_flow import nightly_pipeline; nightly_pipeline()"
 
 # Or run a walk-forward backtest validation (separate from the pipeline above —
@@ -69,8 +81,28 @@ LLM, or Telegram alerts (see comments in that file).
   Calmar, max drawdown, hit-rate-by-decile, information coefficient).
 - **Explainability** (`explain/`): SHAP on the LightGBM base learner,
   aggregated into factor blocks (Momentum/Trend, Oscillators,
-  Volatility/Risk, Volume/Liquidity) with top positive/negative signal
-  lists per stock.
+  Volatility/Risk, Volume/Liquidity, Fundamental/Quality) with top
+  positive/negative signal lists per stock.
+- **Fundamentals** (`connectors/fundamentals_yfinance.py`,
+  `features/fundamental.py`): annual statements, PIT-stamped via actual
+  historical earnings-announcement dates (falling back to SEBI's 60-day
+  filing deadline), joined against daily prices via `pd.merge_asof` for
+  PE/PB (price-dependent, computed daily) plus ROE/ROA/D-E/net margin.
+  Revenue/EPS YoY growth are computed but deliberately excluded from the
+  model-facing feature set — see that module's docstring for the live
+  backtest evidence behind that call.
+- **Portfolio Constructor** (`portfolio/`): turns a ranked Top-N into an
+  illustrative allocation via Hierarchical Risk Parity (robust to noisy
+  covariance estimates, unlike Markowitz), tilted by model confidence and
+  capped by a Conservative/Balanced/Aggressive risk profile's
+  position/sector limits. Per-stock stop-loss/target are ATR-based;
+  portfolio "expected return" comes from the backtest's own
+  score-decile-conditional historical realized returns
+  (`backtest/calibration_curve.py`), never fabricated from the classifier's
+  score directly (it was never calibrated for return *magnitude*, only
+  probability). Not model inference — a deterministic optimization over
+  already-published rankings, safe to compute on demand
+  (`POST /portfolio/construct`, Streamlit's "Portfolio Constructor" tab).
 - **Orchestration** (`orchestration/nightly_flow.py`): a Prefect flow
   wiring ingestion → features → labels → predict/rank/explain, with
   data-quality gates, an audit trail in `run_metadata`, and freshness/drift
@@ -81,6 +113,99 @@ LLM, or Telegram alerts (see comments in that file).
 
 Every design decision above has a documented rationale in the module
 docstrings — start there before changing behavior, not just the code.
+
+## Scheduling & Deployment
+
+The nightly pipeline (§17, §21: "nightly batch as a scheduled deployment")
+is idempotent/resumable by construction, so it's safe to run unattended.
+Two ways to schedule it — pick one (GitHub Actions is the primary/
+recommended path; local Task Scheduler is a documented alternative if you'd
+rather run on your own machine, e.g. for full control over long FinBERT
+runs without touching a shared CI runner).
+
+### Option A: GitHub Actions (recommended — runs without your machine on)
+
+`.github/workflows/nightly.yml` runs the pipeline daily at 19:00 IST
+(13:30 UTC — after NSE close; adjust the `cron:` line to change it) on a
+GitHub-hosted runner, then commits the updated `data/` back to `main`.
+
+**Why commit data back to git**: GitHub Actions runners are ephemeral — a
+fresh, empty disk every run. Without persisting `data/` somewhere, the
+accumulated news/sentiment history would be destroyed every single night
+(Google News RSS has no historical archive to re-fetch from — see
+"News & Sentiment" below), and prices/fundamentals would need a full
+5-year re-fetch every run instead of a cheap incremental one. Git-as-
+storage is the zero-new-infrastructure way to solve that for a personal-
+scale project — see `.gitignore`: `data/bronze/` (raw fetch, regenerated
+fresh every run, never accumulated) stays out of git; `data/silver/`,
+`data/gold/`, and the SQLite app db are committed.
+
+Setup: push this repo to GitHub (already done if you're reading this from
+there) — the workflow runs automatically on the schedule once merged to
+`main`. No secrets are required to run; optionally add
+`TELEGRAM_BOT_TOKEN`/`TELEGRAM_CHAT_ID` as **repo Settings → Secrets and
+variables → Actions** secrets to receive failure alerts (`monitoring/
+alerts.py` degrades to log-only otherwise). Trigger a run on demand from
+the **Actions** tab (`workflow_dispatch`) to test it without waiting for
+the schedule. A run has historically taken **~2.5 hours**, dominated by
+per-symbol FinBERT scoring across the ~500-symbol universe — the workflow
+sets `timeout-minutes: 300` and a concurrency guard so a second scheduled
+trigger can't overlap a still-running one.
+
+**Viewing results**: deploy `apps/streamlit_app/app.py` to
+[Streamlit Community Cloud](https://share.streamlit.io) (free, connects
+directly to this GitHub repo): sign in with GitHub → "New app" → pick this
+repo/branch → main file path `apps/streamlit_app/app.py`. It installs from
+`requirements.txt` (deliberately lean — no transformers/torch, which the
+app never imports; see that file's header comment) and auto-redeploys on
+every push, including the workflow's own nightly data commits — so the
+hosted dashboard reflects last night's run automatically, no manual step.
+
+### Option B: local Windows Task Scheduler
+
+`scripts/run_nightly.ps1` wraps the same pipeline with what an unattended
+*local* run needs instead: a persisted log file
+(`data/logs/nightly_<timestamp>.log`, 30-day retention, not versioned) and
+a propagated process exit code, so a failed run shows up in Task
+Scheduler's own history too.
+
+```powershell
+schtasks /create /tn "StockPredictor Nightly" /tr "powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"C:\path\to\repo\scripts\run_nightly.ps1\"" /sc daily /st 19:00
+```
+
+Adjust `/st` (start time, 24h HH:MM, local time) to whenever your machine
+is reliably on — after NSE close (15:30 IST) is the only hard constraint;
+weekends/holidays are harmless no-ops (the pipeline tolerates stale gaps,
+see "Honesty notes"), not worth excluding via `/sc weekly` unless you'd
+rather skip the wasted run. To inspect, run on demand, or remove:
+
+```powershell
+schtasks /query /tn "StockPredictor Nightly"
+schtasks /run /tn "StockPredictor Nightly"      # trigger immediately, e.g. to test
+schtasks /delete /tn "StockPredictor Nightly"   # /f to skip the confirmation prompt
+```
+
+## News & Sentiment
+
+Nightly ingestion (`connectors/news_rss.py`, `sentiment/`) fetches each
+company's current Google News RSS results, filters them for actual
+relevance (`sentiment/relevance.py`), and scores each headline with FinBERT
+(`sentiment/classifier.py`, `ProsusAI/finbert`) into a signed
+[-1, 1] polarity score. `features/sentiment.py` turns that into PIT-correct
+rolling aggregates (5d/20d sentiment, momentum, volume, dispersion).
+
+**Deliberately not yet a trained-model feature** (not in
+`ALL_FEATURE_COLUMNS`): unlike prices or annual fundamentals, free news RSS
+has no historical archive to backfill from — real news history only starts
+accumulating from whenever nightly ingestion first ran. Training on columns
+that are almost entirely NaN across a multi-year backtest window already
+backfired once for fundamentals' growth ratios (see
+`features/fundamental.py`'s docstring: IC dropped from 0.037 to 0.015); the
+same failure mode would apply here, worse. So this is intentionally wired
+in now to *start accumulating real data*, and shown live in the Streamlit
+Stock Detail tab (recent headlines + FinBERT sentiment) as real value today
+— folding it into the trained model is a later, evidence-gated step once
+enough calendar time has passed to evaluate it out-of-sample honestly.
 
 ## Universe
 
@@ -105,7 +230,10 @@ history is handled gracefully, not treated as a failure.
 
 See `src/stockpredictor/` for the package (`connectors/`, `ingestion/`,
 `features/`, `labels/`, `models/`, `prediction/`, `ranking/`, `explain/`,
-`backtest/`, `orchestration/`, `monitoring/`, `api/`, `storage/`,
-`common/`), `apps/streamlit_app/` for the dashboard, `scripts/` for
-one-off/research entrypoints, and `tests/{unit,contract,leakage,integration}/`
-for the test suite.
+`backtest/`, `portfolio/`, `sentiment/`, `orchestration/`, `monitoring/`,
+`api/`, `storage/`, `common/`), `apps/streamlit_app/` for the dashboard,
+`scripts/` for one-off/research entrypoints,
+`tests/{unit,contract,leakage,integration}/` for the test suite, and
+`.github/workflows/nightly.yml` for the scheduled pipeline run (see
+"Scheduling & Deployment"). `requirements.txt` exists only for Streamlit
+Community Cloud's deploy step — local/CI installs use `pyproject.toml`.

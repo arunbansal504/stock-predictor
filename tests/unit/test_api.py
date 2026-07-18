@@ -193,3 +193,83 @@ def test_monitoring_runs_returns_latest_summary_and_history(client, db_sessionma
     assert data["latest_run"]["run_id"] == "run1"
     assert data["latest_run"]["overall_status"] == "success"
     assert len(data["recent_stages"]) == 2
+
+
+def _seed_portfolio_scenario(tmp_lake, db_sessionmaker, n_symbols=10, horizon="5d"):
+    from stockpredictor.storage.models import Security
+
+    symbols = [f"SYM{i}" for i in range(n_symbols)]
+    rng = np.random.default_rng(0)
+
+    rankings = pd.DataFrame(
+        {
+            "symbol": symbols,
+            "date": pd.to_datetime(["2024-06-01"] * n_symbols),
+            "horizon": [horizon] * n_symbols,
+            "score": np.linspace(0.7, 0.5, n_symbols),
+            "rank": range(1, n_symbols + 1),
+        }
+    )
+    persist_rankings(tmp_lake, rankings, horizon)
+
+    dates = pd.bdate_range("2024-01-01", periods=110)
+    price_frames, feature_frames = [], []
+    for i, s in enumerate(symbols):
+        closes = 100 + np.cumsum(rng.normal(0, 1 + i * 0.1, len(dates)))
+        price_frames.append(pd.DataFrame({"symbol": s, "date": dates, "close_adj": closes}))
+        feature_frames.append(pd.DataFrame({"symbol": [s], "date": [dates[-1]], "atr_14": [2.0 + i * 0.2]}))
+        prices_df = price_frames[-1]
+        tmp_lake.write(prices_df, DataLayer.SILVER, "prices", s, key_cols=["symbol", "date"])
+        tmp_lake.write(feature_frames[-1], DataLayer.GOLD, "features", s, key_cols=["symbol", "date"])
+
+    calibration = pd.DataFrame(
+        {"decile": [0, 1], "score_min": [0.0, 0.5], "score_max": [0.49, 1.0], "mean_return": [0.01, 0.04], "median_return": [0.01, 0.04], "n_obs": [10, 10]}
+    )
+    persist_backtest_result(
+        tmp_lake, BacktestResult(pd.Series(dtype="float64"), pd.Series(dtype="float64"), pd.Series(dtype="float64"), {}, {}),
+        horizon=horizon, strategy_id="top_k_technical_fundamental_v1", return_calibration=calibration,
+    )
+
+    session = db_sessionmaker()
+    try:
+        for i, s in enumerate(symbols):
+            session.add(Security(symbol=s, exchange="NSE", name=f"{s} Ltd.", sector="IT" if i % 3 else "Financials"))
+        session.commit()
+    finally:
+        session.close()
+
+    return symbols
+
+
+def test_portfolio_construct_returns_full_portfolio(client, tmp_lake, db_sessionmaker):
+    _seed_portfolio_scenario(tmp_lake, db_sessionmaker, n_symbols=10)
+
+    resp = client.post("/portfolio/construct", json={"horizon": "5d", "top_n": 10, "risk_profile": "balanced"})
+    assert resp.status_code == 200
+    data = resp.json()["data"]
+    assert data["risk_profile"] == "balanced"
+    assert len(data["positions"]) == 10
+    assert data["expected_volatility"] > 0
+    assert "not investment advice" in data["disclaimer"].lower()
+    total_weight = sum(p["weight"] for p in data["positions"])
+    assert total_weight == pytest.approx(data["total_allocated_weight"], abs=1e-6)
+
+
+def test_portfolio_construct_404_when_no_rankings(client):
+    resp = client.post("/portfolio/construct", json={"horizon": "90d"})
+    assert resp.status_code == 404
+
+
+def test_portfolio_construct_default_risk_profile_is_balanced(client, tmp_lake, db_sessionmaker):
+    _seed_portfolio_scenario(tmp_lake, db_sessionmaker, n_symbols=10)
+    resp = client.post("/portfolio/construct", json={})
+    assert resp.status_code == 200
+    assert resp.json()["data"]["risk_profile"] == "balanced"
+
+
+def test_portfolio_construct_conservative_flags_diversification_shortfall(client, tmp_lake, db_sessionmaker):
+    _seed_portfolio_scenario(tmp_lake, db_sessionmaker, n_symbols=3)
+    resp = client.post("/portfolio/construct", json={"top_n": 3, "risk_profile": "conservative"})
+    assert resp.status_code == 200
+    data = resp.json()["data"]
+    assert data["diversification_warning"] is not None

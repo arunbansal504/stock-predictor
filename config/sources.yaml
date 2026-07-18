@@ -14,17 +14,17 @@ prices:
 
 fundamentals:
   connector: fundamentals_yfinance
-  enabled: false # Phase 1 stub; sparse/laggy free data, see §5 caveats
+  enabled: true # annual statements only (quarterly history too shallow, ~5 quarters); see connector docstring
   rate_limit_per_min: 60
 
 news:
   connector: news_rss
-  enabled: false # Phase 2
+  enabled: true # Phase 2; FinBERT-scored, no historical backfill -- see features/sentiment.py docstring
   rate_limit_per_min: 60
 
 macro:
   connector: macro_yfinance
-  enabled: false # Phase 1 stub (VIX/USDINR/crude via yfinance tickers)
+  enabled: true # benchmark index series (NIFTY500 etc.) used throughout labels/backtest; VIX/USDINR/crude available but not yet used as features
 
 # Deferred to later phases per §5 "Deferred" list: Polygon, Alpha Vantage,
 # Finnhub, Twelve Data, Quandl, broker feeds (Kite/Fyers/Angel One/IBKR),

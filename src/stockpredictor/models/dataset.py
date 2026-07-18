@@ -7,14 +7,14 @@ from __future__ import annotations
 import pandas as pd
 
 from stockpredictor.common.types import DataLayer
-from stockpredictor.features.registry import GOLD_DOMAIN as FEATURES_DOMAIN
-from stockpredictor.features.registry import TECHNICAL_FEATURE_COLUMNS
+from stockpredictor.features.registry import ALL_FEATURE_COLUMNS, GOLD_DOMAIN as FEATURES_DOMAIN
 from stockpredictor.labels.registry import GOLD_DOMAIN as LABELS_DOMAIN
 from stockpredictor.storage.lake import Lake
 
 # Cross-sectional rank features are the model's default input (§7: "this is
 # what makes it a *relative* ranking model and removes market-wide drift").
-FEATURE_RANK_COLUMNS: list[str] = [f"{c}_xrank" for c in TECHNICAL_FEATURE_COLUMNS]
+# ALL_FEATURE_COLUMNS = technical + fundamental blocks (features/registry.py).
+FEATURE_RANK_COLUMNS: list[str] = [f"{c}_xrank" for c in ALL_FEATURE_COLUMNS]
 
 
 def build_training_frame(lake: Lake, horizon: str) -> pd.DataFrame:
@@ -42,4 +42,4 @@ def build_training_frame(lake: Lake, horizon: str) -> pd.DataFrame:
 
 def get_feature_columns(use_cross_sectional: bool = True) -> list[str]:
     """Which columns from the joined frame are model inputs."""
-    return FEATURE_RANK_COLUMNS if use_cross_sectional else list(TECHNICAL_FEATURE_COLUMNS)
+    return FEATURE_RANK_COLUMNS if use_cross_sectional else list(ALL_FEATURE_COLUMNS)

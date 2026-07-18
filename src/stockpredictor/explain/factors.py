@@ -1,9 +1,9 @@
 """Factor block definitions (§7): maps engineered feature names to the
 interpretable groups shown to users (Trend, Oscillators, Volatility,
-Volume). Phase 1 only has the technical block populated -- Fundamental,
-Sentiment, Macro, and Ownership blocks are placeholders until those data
-sources are ingested (§27 Phase 2+); a feature landing in "Other" is a
-signal that this mapping needs updating, not a bug in the caller.
+Volume, Fundamental/Quality). Sentiment, Macro, and Ownership blocks remain
+placeholders until those data sources are ingested (§27 Phase 2+); a
+feature landing in "Other" is a signal that this mapping needs updating,
+not a bug in the caller.
 """
 
 from __future__ import annotations
@@ -29,6 +29,11 @@ FACTOR_BLOCKS: dict[str, list[str]] = {
     "Oscillators": ["rsi_14", "bb_pctb", "bb_width"],
     "Volatility/Risk": ["atr_14", "atr_14_pct", "realized_vol_20d", "realized_vol_60d"],
     "Volume/Liquidity": ["obv", "volume_zscore_20d"],
+    # revenue_growth_yoy/eps_growth_yoy deliberately excluded here too --
+    # see features/fundamental.py's docstring for why they're not in
+    # FUNDAMENTAL_FEATURE_COLUMNS (and therefore never appear as real model
+    # features to explain).
+    "Fundamental/Quality": ["pe_ratio", "pb_ratio", "roe", "roa", "debt_to_equity", "net_margin"],
 }
 
 _FEATURE_TO_BLOCK: dict[str, str] = {

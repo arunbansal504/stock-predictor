@@ -96,6 +96,21 @@ def sync_universe(
     return n
 
 
+def get_security_names(session_factory: sessionmaker[Session], symbols: list[str]) -> dict[str, str]:
+    """symbol -> company name for the given symbols, from `securities`.
+    Used by news ingestion (ingestion/news.py via orchestration/
+    nightly_flow.py), since a bare ticker is too generic a search term on
+    its own (see connectors/news_rss.py's docstring). Symbols with no
+    matching row are simply absent from the result, not an error -- the
+    caller skips news ingestion for those rather than guessing a name."""
+    session = session_factory()
+    try:
+        rows = session.execute(select(Security).where(Security.symbol.in_(symbols))).scalars()
+        return {s.symbol: s.name for s in rows}
+    finally:
+        session.close()
+
+
 def sync_universe_from_nse(session_factory: sessionmaker[Session]) -> pd.DataFrame:
     """Fetch NSE's current NIFTY 500 constituent list live and upsert into
     `securities`. Returns the fetched DataFrame (not just a count) so

@@ -1,0 +1,33 @@
+# For Streamlit Community Cloud only (it installs from requirements.txt,
+# not pyproject.toml). Mirrors pyproject.toml's base `dependencies` --
+# deliberately NOT the `sentiment` extra (transformers/torch, ~1-2GB): the
+# app never imports them (see pyproject.toml's comment on that extra) and
+# Streamlit Cloud's free tier has real build/resource limits. Keep this in
+# sync with pyproject.toml's `dependencies` list by hand -- there are only
+# two files, and a single source of truth (setuptools reading
+# requirements.txt to populate pyproject.toml) would be overkill at this
+# project's size (§16: don't add infra before a metric forces it).
+#
+# apps/streamlit_app/app.py adds src/ to sys.path directly rather than
+# requiring `stockpredictor` to be pip-installed, so this file only needs
+# the third-party packages, not `-e .`.
+pandas>=2.2
+numpy>=1.26
+pyarrow>=16.0
+duckdb>=1.0
+sqlalchemy>=2.0
+pydantic>=2.7
+pydantic-settings>=2.3
+pyyaml>=6.0
+python-dotenv>=1.0
+yfinance>=0.2.40
+tenacity>=8.2
+scikit-learn>=1.5
+lightgbm>=4.3
+shap>=0.45
+prefect>=2.19
+fastapi>=0.111
+uvicorn>=0.30
+streamlit>=1.35
+scipy>=1.11
+feedparser>=6.0

@@ -1,7 +1,7 @@
 """First full historical run (§27 Phase 1 step 15, §29 "Definition of MVP
-done"): wires universe -> prices -> macro benchmark -> technical features ->
-labels -> walk-forward model training -> backtest into one script, against
-real data.
+done"): wires universe -> prices -> macro benchmark -> fundamentals ->
+technical+fundamental features -> labels -> walk-forward model training ->
+backtest into one script, against real data.
 
 Not a unit test -- a research script you run by hand to sanity-check the
 whole loop end to end and eyeball whether the results are *plausible*
@@ -21,10 +21,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 import pandas as pd
 
+from stockpredictor.backtest.calibration_curve import compute_decile_return_calibration
 from stockpredictor.backtest.engine import select_rebalance_dates, simulate_top_k_strategy
 from stockpredictor.backtest.registry import persist_backtest_result
 from stockpredictor.common.logging import get_logger
 from stockpredictor.features.registry import build_technical_features_for_universe, persist_features
+from stockpredictor.ingestion.fundamentals import ingest_symbol_fundamentals
 from stockpredictor.ingestion.macro import ingest_macro_series
 from stockpredictor.ingestion.prices import ingest_symbol_prices
 from stockpredictor.ingestion.universe import load_universe_csv, sync_universe, sync_universe_from_nse
@@ -56,7 +58,7 @@ def main() -> None:
     end = dt.date.today()
     start = end - dt.timedelta(days=int(365.25 * YEARS_OF_HISTORY))
 
-    logger.info("Step 1/6: syncing universe")
+    logger.info("Step 1/7: syncing universe")
     try:
         universe_df = sync_universe_from_nse(sessionmaker)
         symbols = sorted(universe_df["symbol"].tolist())
@@ -66,7 +68,7 @@ def main() -> None:
         symbols = sorted(load_universe_csv()["symbol"].tolist())
     logger.info("Universe: %d symbols", len(symbols))
 
-    logger.info("Step 2/6: ingesting prices + benchmark (%s to %s)", start, end)
+    logger.info("Step 2/7: ingesting prices + benchmark (%s to %s)", start, end)
     ingested, failed = 0, []
     for symbol in symbols:
         rows = ingest_symbol_prices(lake, symbol, start, end)
@@ -77,17 +79,21 @@ def main() -> None:
     ingest_macro_series(lake, [BENCHMARK], start, end)
     logger.info("Prices ingested for %d/%d symbols (failed: %s)", ingested, len(symbols), failed)
 
-    logger.info("Step 3/6: building technical features")
+    logger.info("Step 3/7: ingesting fundamentals")
+    fund_ingested = sum(1 for symbol in symbols if ingest_symbol_fundamentals(lake, symbol) > 0)
+    logger.info("Fundamentals ingested for %d/%d symbols", fund_ingested, len(symbols))
+
+    logger.info("Step 4/7: building technical + fundamental features")
     features = build_technical_features_for_universe(lake)
     persist_features(lake, features)
     logger.info("Feature rows: %d", len(features))
 
-    logger.info("Step 4/6: building labels (horizon=%s)", HORIZON_NAME)
+    logger.info("Step 5/7: building labels (horizon=%s)", HORIZON_NAME)
     labels = build_labels_for_universe(lake, benchmark_series=BENCHMARK, horizons={HORIZON_NAME: HORIZON_DAYS})
     persist_labels(lake, labels)
     logger.info("Label rows: %d", len(labels))
 
-    logger.info("Step 5/6: walk-forward training + out-of-fold scoring")
+    logger.info("Step 6/7: walk-forward training + out-of-fold scoring")
     training_frame = build_training_frame(lake, HORIZON_NAME)
     logger.info("Training frame rows: %d", len(training_frame))
     if training_frame.empty:
@@ -139,10 +145,18 @@ def main() -> None:
         return
     scored = pd.concat(scored_frames, ignore_index=True)
 
-    logger.info("Step 6/6: backtesting the out-of-fold Top-%d strategy", TOP_K)
+    logger.info("Step 7/7: backtesting the out-of-fold Top-%d strategy", TOP_K)
     result = simulate_top_k_strategy(scored, horizon_days=HORIZON_DAYS, top_k=TOP_K)
-    persist_backtest_result(lake, result, horizon=HORIZON_NAME, strategy_id="top_k_technical_v1")
-    logger.info("Backtest result persisted for the Streamlit Backtest Lab / API to read")
+    # Score->realized-return calibration (§12): the honest source for the
+    # Portfolio Constructor's "expected return" figure -- grounded in this
+    # backtest's own out-of-fold history, not fabricated from the
+    # classifier's score (which was never calibrated for return magnitude).
+    return_calibration = compute_decile_return_calibration(scored["score"], scored["forward_return"])
+    persist_backtest_result(
+        lake, result, horizon=HORIZON_NAME, strategy_id="top_k_technical_fundamental_v1",
+        return_calibration=return_calibration,
+    )
+    logger.info("Backtest result + return calibration persisted for the Portfolio Constructor / Backtest Lab / API to read")
 
     print("\n=== Strategy vs Benchmark (out-of-fold, net of estimated costs) ===")
     print(pd.DataFrame({"strategy": result.metrics, "benchmark": result.benchmark_metrics}))

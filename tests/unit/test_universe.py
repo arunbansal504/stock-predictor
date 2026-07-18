@@ -7,7 +7,12 @@ import pytest
 from sqlalchemy import select
 
 from stockpredictor.ingestion import universe as universe_ingestion
-from stockpredictor.ingestion.universe import load_universe_csv, sync_universe, sync_universe_from_nse
+from stockpredictor.ingestion.universe import (
+    get_security_names,
+    load_universe_csv,
+    sync_universe,
+    sync_universe_from_nse,
+)
 from stockpredictor.storage.models import Security
 
 
@@ -131,3 +136,19 @@ def test_sync_universe_from_nse_propagates_fetch_failures(db_sessionmaker, monke
     monkeypatch.setattr(universe_ingestion, "fetch_nifty500_constituents", fail)
     with pytest.raises(ValueError, match="NSE unreachable"):
         sync_universe_from_nse(db_sessionmaker)
+
+
+def test_get_security_names_returns_symbol_to_name_mapping(db_sessionmaker, monkeypatch):
+    monkeypatch.setattr(universe_ingestion, "fetch_nifty500_constituents", _fake_nse_df)
+    sync_universe_from_nse(db_sessionmaker)
+
+    names = get_security_names(db_sessionmaker, ["RELIANCE", "TCS"])
+    assert names == {"RELIANCE": "Reliance Industries Ltd.", "TCS": "Tata Consultancy Services Ltd."}
+
+
+def test_get_security_names_omits_unknown_symbols(db_sessionmaker, monkeypatch):
+    monkeypatch.setattr(universe_ingestion, "fetch_nifty500_constituents", _fake_nse_df)
+    sync_universe_from_nse(db_sessionmaker)
+
+    names = get_security_names(db_sessionmaker, ["RELIANCE", "NOTREAL"])
+    assert names == {"RELIANCE": "Reliance Industries Ltd."}

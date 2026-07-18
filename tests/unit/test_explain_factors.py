@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from stockpredictor.explain.factors import FACTOR_BLOCKS, feature_to_block
-from stockpredictor.features.registry import TECHNICAL_FEATURE_COLUMNS
+from stockpredictor.features.registry import ALL_FEATURE_COLUMNS
 
 
 def test_feature_to_block_maps_known_raw_feature():
@@ -19,12 +19,18 @@ def test_feature_to_block_unknown_feature_returns_other():
     assert feature_to_block("some_future_fundamental_feature") == "Other"
 
 
-def test_every_technical_feature_column_is_mapped_to_a_real_block():
-    """Lineage guard: if features/registry.py adds a new technical feature
-    without updating FACTOR_BLOCKS, that feature would silently land in
-    "Other" on every explanation card. Catch the drift here instead."""
-    unmapped = [c for c in TECHNICAL_FEATURE_COLUMNS if feature_to_block(c) == "Other"]
-    assert unmapped == [], f"Unmapped technical features: {unmapped}"
+def test_feature_to_block_maps_known_fundamental_feature():
+    assert feature_to_block("roe") == "Fundamental/Quality"
+    assert feature_to_block("pe_ratio_xrank") == "Fundamental/Quality"
+
+
+def test_every_feature_column_is_mapped_to_a_real_block():
+    """Lineage guard: if features/registry.py adds a new technical or
+    fundamental feature without updating FACTOR_BLOCKS, that feature would
+    silently land in "Other" on every explanation card. Catch the drift
+    here instead."""
+    unmapped = [c for c in ALL_FEATURE_COLUMNS if feature_to_block(c) == "Other"]
+    assert unmapped == [], f"Unmapped feature columns: {unmapped}"
 
 
 def test_no_feature_appears_in_more_than_one_block():

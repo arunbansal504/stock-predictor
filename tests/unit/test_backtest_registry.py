@@ -4,7 +4,12 @@ import pandas as pd
 import pytest
 
 from stockpredictor.backtest.engine import BacktestResult
-from stockpredictor.backtest.registry import persist_backtest_result, read_backtest_results, read_latest_backtest_result
+from stockpredictor.backtest.registry import (
+    persist_backtest_result,
+    read_backtest_results,
+    read_latest_backtest_result,
+    read_latest_return_calibration,
+)
 
 
 def _result() -> BacktestResult:
@@ -48,3 +53,28 @@ def test_read_latest_backtest_result_none_when_missing(tmp_lake):
 def test_read_latest_backtest_result_none_for_wrong_horizon(tmp_lake):
     persist_backtest_result(tmp_lake, _result(), horizon="5d", strategy_id="top_k_v1", run_date=pd.Timestamp("2024-01-01"))
     assert read_latest_backtest_result(tmp_lake, "top_k_v1", "30d") is None
+
+
+def test_persist_and_read_return_calibration_roundtrip(tmp_lake):
+    calibration = pd.DataFrame(
+        {"decile": [0, 1], "score_min": [0.0, 0.5], "score_max": [0.49, 1.0], "mean_return": [0.01, 0.05], "median_return": [0.01, 0.05], "n_obs": [10, 10]}
+    )
+    persist_backtest_result(
+        tmp_lake, _result(), horizon="5d", strategy_id="top_k_v1",
+        run_date=pd.Timestamp("2024-01-01"), return_calibration=calibration,
+    )
+
+    out = read_latest_return_calibration(tmp_lake, "top_k_v1", "5d")
+    assert len(out) == 2
+    assert out.iloc[1]["mean_return"] == pytest.approx(0.05)
+
+
+def test_read_latest_return_calibration_empty_when_no_backtest(tmp_lake):
+    out = read_latest_return_calibration(tmp_lake, "nope", "5d")
+    assert out.empty
+
+
+def test_read_latest_return_calibration_empty_when_not_provided(tmp_lake):
+    persist_backtest_result(tmp_lake, _result(), horizon="5d", strategy_id="top_k_v1", run_date=pd.Timestamp("2024-01-01"))
+    out = read_latest_return_calibration(tmp_lake, "top_k_v1", "5d")
+    assert out.empty

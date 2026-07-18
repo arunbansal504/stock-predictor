@@ -5,7 +5,7 @@ import pandas as pd
 import pytest
 
 from stockpredictor.common.types import DataLayer
-from stockpredictor.features.registry import GOLD_DOMAIN as FEATURES_DOMAIN, TECHNICAL_FEATURE_COLUMNS
+from stockpredictor.features.registry import ALL_FEATURE_COLUMNS, GOLD_DOMAIN as FEATURES_DOMAIN
 from stockpredictor.labels.registry import GOLD_DOMAIN as LABELS_DOMAIN
 from stockpredictor.prediction import predict
 
@@ -14,7 +14,7 @@ def _seed_features(tmp_lake, symbol: str, n: int, seed: int) -> None:
     rng = np.random.default_rng(seed)
     dates = pd.bdate_range("2023-01-01", periods=n)
     data = {"symbol": [symbol] * n, "date": dates}
-    for col in TECHNICAL_FEATURE_COLUMNS:
+    for col in ALL_FEATURE_COLUMNS:
         raw = rng.normal(0, 1, n)
         data[col] = raw
         data[f"{col}_xrank"] = pd.Series(raw).rank(pct=True)

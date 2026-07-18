@@ -39,9 +39,16 @@ from stockpredictor.explain.registry import persist_explanations
 from stockpredictor.explain.signals import explain_predictions
 from stockpredictor.features.registry import build_technical_features_for_universe, persist_features
 from stockpredictor.ingestion.corporate_actions import sync_corporate_actions
+from stockpredictor.ingestion.fundamentals import ingest_symbol_fundamentals
 from stockpredictor.ingestion.macro import ingest_macro_series
+from stockpredictor.ingestion.news import ingest_symbol_news
 from stockpredictor.ingestion.prices import ingest_symbol_prices
-from stockpredictor.ingestion.universe import load_universe_csv, sync_universe, sync_universe_from_nse
+from stockpredictor.ingestion.universe import (
+    get_security_names,
+    load_universe_csv,
+    sync_universe,
+    sync_universe_from_nse,
+)
 from stockpredictor.labels.registry import build_labels_for_universe, persist_labels
 from stockpredictor.monitoring.alerts import send_alert
 from stockpredictor.monitoring.drift import check_and_update_baseline
@@ -103,6 +110,40 @@ def task_ingest_corporate_actions(sessionmaker, symbols: list[str]) -> int:
     return sync_corporate_actions(sessionmaker, symbols)
 
 
+@task(name="ingest_fundamentals", retries=1, retry_delay_seconds=30, cache_policy=NO_CACHE)
+def task_ingest_fundamentals(lake: Lake, symbols: list[str]) -> int:
+    """No minimum-success-ratio gate here, unlike prices: fundamentals are
+    documented as "sparse, laggy" free data (§5), and build_features already
+    handles a symbol with no fundamentals gracefully (NaN columns, not a
+    dropped symbol) -- a low fundamentals coverage rate is an honest data
+    limitation to monitor, not a reason to abort the whole run."""
+    succeeded = 0
+    for symbol in symbols:
+        if ingest_symbol_fundamentals(lake, symbol) > 0:
+            succeeded += 1
+    logger.info("Fundamentals ingested for %d/%d symbols", succeeded, len(symbols))
+    return succeeded
+
+
+@task(name="ingest_news", retries=1, retry_delay_seconds=30, cache_policy=NO_CACHE)
+def task_ingest_news(lake: Lake, sessionmaker, symbols: list[str]) -> int:
+    """No minimum-success-ratio gate, no historical-depth expectation --
+    same rationale as task_ingest_fundamentals, plus features/sentiment.py's
+    documented no-backfill constraint: this task's whole job right now is
+    to start accumulating real, PIT-correct news/sentiment data one day at
+    a time, not to backfill anything."""
+    names = get_security_names(sessionmaker, symbols)
+    succeeded = 0
+    for symbol in symbols:
+        company_name = names.get(symbol)
+        if company_name is None:
+            continue
+        if ingest_symbol_news(lake, symbol, company_name) > 0:
+            succeeded += 1
+    logger.info("News ingested for %d/%d symbols", succeeded, len(symbols))
+    return succeeded
+
+
 @task(name="check_freshness", cache_policy=NO_CACHE)
 def task_check_freshness(lake: Lake) -> None:
     """Non-fatal by design (§23): a stale price feed can legitimately mean
@@ -122,7 +163,7 @@ def task_check_freshness(lake: Lake) -> None:
 
 @task(name="build_features", cache_policy=NO_CACHE)
 def task_build_features(lake: Lake) -> int:
-    from stockpredictor.features.registry import TECHNICAL_FEATURE_COLUMNS
+    from stockpredictor.features.registry import ALL_FEATURE_COLUMNS
 
     features = build_technical_features_for_universe(lake)
     check_non_empty(features, stage="build_features")
@@ -130,7 +171,7 @@ def task_build_features(lake: Lake) -> int:
 
     latest_date = features["date"].max()
     latest_snapshot = features[features["date"] == latest_date]
-    drift = check_and_update_baseline(lake, latest_snapshot, TECHNICAL_FEATURE_COLUMNS, DRIFT_Z_THRESHOLD)
+    drift = check_and_update_baseline(lake, latest_snapshot, ALL_FEATURE_COLUMNS, DRIFT_Z_THRESHOLD)
     if drift is not None:
         drifted = drift[drift["drifted"]]
         if not drifted.empty:
@@ -218,6 +259,8 @@ def nightly_pipeline(
             sessionmaker, run_id, "ingest_corporate_actions",
             task_ingest_corporate_actions, sessionmaker, symbols,
         )
+        run_tracked_stage(sessionmaker, run_id, "ingest_fundamentals", task_ingest_fundamentals, lake, symbols)
+        run_tracked_stage(sessionmaker, run_id, "ingest_news", task_ingest_news, lake, sessionmaker, symbols)
         run_tracked_stage(sessionmaker, run_id, "build_features", task_build_features, lake)
         run_tracked_stage(sessionmaker, run_id, "build_labels", task_build_labels, lake, benchmark, horizons)
 

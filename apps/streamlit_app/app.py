@@ -23,9 +23,13 @@ import streamlit as st
 
 from stockpredictor.backtest.engine import METRIC_NAMES
 from stockpredictor.backtest.registry import read_latest_backtest_result
+from stockpredictor.common.types import DataLayer, RiskProfile
 from stockpredictor.explain.registry import read_explanations
+from stockpredictor.features.sentiment import latest_sentiment_snapshot
 from stockpredictor.monitoring.accuracy import compute_accuracy
+from stockpredictor.portfolio.service import DEFAULT_STRATEGY_ID, construct_portfolio_from_lake
 from stockpredictor.ranking.registry import read_latest_rankings
+from stockpredictor.storage.db import make_engine, make_sessionmaker
 from stockpredictor.storage.lake import Lake
 
 DISCLAIMER = (
@@ -33,7 +37,7 @@ DISCLAIMER = (
     "Markets carry risk; past performance does not guarantee future results."
 )
 HORIZONS = ["5d", "30d", "90d"]
-DEFAULT_STRATEGY_ID = "top_k_technical_v1"
+RISK_PROFILES = [RiskProfile.CONSERVATIVE, RiskProfile.BALANCED, RiskProfile.AGGRESSIVE]
 
 
 @st.cache_resource
@@ -41,11 +45,17 @@ def get_lake() -> Lake:
     return Lake()
 
 
+@st.cache_resource
+def get_sessionmaker():
+    return make_sessionmaker(make_engine())
+
+
 st.set_page_config(page_title="Stock Predictor (Research)", layout="wide")
 st.title("AI Stock Research Dashboard")
 st.warning(DISCLAIMER)
 
 lake = get_lake()
+sessionmaker_ = get_sessionmaker()
 
 with st.sidebar:
     st.header("Controls")
@@ -54,9 +64,12 @@ with st.sidebar:
     if top_n == "Custom":
         top_n = st.number_input("Custom N", min_value=1, max_value=500, value=15)
     strategy_id = st.text_input("Backtest strategy id", value=DEFAULT_STRATEGY_ID)
+    risk_profile = st.selectbox(
+        "Risk profile", RISK_PROFILES, index=1, format_func=lambda p: p.value.capitalize()
+    )
 
-tab_picks, tab_detail, tab_backtest, tab_transparency = st.tabs(
-    ["Top Picks", "Stock Detail", "Backtest Lab", "Model Transparency"]
+tab_picks, tab_detail, tab_portfolio, tab_backtest, tab_transparency = st.tabs(
+    ["Top Picks", "Stock Detail", "Portfolio Constructor", "Backtest Lab", "Model Transparency"]
 )
 
 with tab_picks:
@@ -108,6 +121,73 @@ with tab_detail:
                 st.markdown("**Top negative signals**")
                 for s in exp["top_negative_signals"]:
                     st.write(f"- `{s['feature']}` ({s['block']}): {s['contribution']:+.4f}")
+
+        st.markdown("---")
+        st.markdown("**Recent news & sentiment** (last 5 days, FinBERT-scored)")
+        news = lake.read(DataLayer.SILVER, "news", symbol)
+        snapshot = latest_sentiment_snapshot(news, pd.Timestamp.today())
+        if snapshot["article_count"] == 0:
+            st.caption("No recent news found for this symbol (or the news pipeline hasn't run yet).")
+        else:
+            st.metric("Mean sentiment (5d, -1 to +1)", f"{snapshot['mean_sentiment']:+.2f}", help=f"{snapshot['article_count']} article(s)")
+            for a in snapshot["articles"]:
+                st.markdown(f"[{a['title']}]({a['url']})  \n{a['source']} · {a['published_date'].date()} · {a['sentiment_label']} ({a['sentiment_score']:+.2f})")
+        st.caption(
+            "Sentiment is scored (FinBERT) but not yet a trained-model feature -- "
+            "the free news source has no historical archive, so there isn't enough "
+            "history yet to evaluate it out-of-sample honestly. Shown here as live "
+            "context only."
+        )
+
+with tab_portfolio:
+    st.subheader(f"Portfolio Constructor -- Top {top_n}, {horizon}, {risk_profile.value} risk")
+    portfolio = construct_portfolio_from_lake(
+        lake, sessionmaker_, horizon, risk_profile, int(top_n), strategy_id
+    )
+    if portfolio is None:
+        st.info("No rankings yet for this horizon -- see the Top Picks tab.")
+    elif not portfolio.positions:
+        st.warning(
+            "No candidates had enough price history to build a portfolio "
+            f"(excluded: {', '.join(portfolio.excluded_symbols) or 'none'})."
+        )
+    else:
+        if portfolio.diversification_warning:
+            st.warning(portfolio.diversification_warning)
+
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric(f"Expected return (over {horizon})", f"{portfolio.expected_return:.2%}" if portfolio.expected_return is not None else "N/A")
+        c2.metric("Expected volatility (annualized)", f"{portfolio.expected_volatility:.2%}" if portfolio.expected_volatility is not None else "N/A")
+        c3.metric("Expected Sharpe", f"{portfolio.expected_sharpe:.2f}" if portfolio.expected_sharpe is not None else "N/A")
+        c4.metric("Capital allocated", f"{portfolio.total_allocated_weight:.0%}")
+
+        positions_df = pd.DataFrame(
+            [
+                {
+                    "symbol": p.symbol,
+                    "weight": p.weight,
+                    "sector": p.sector,
+                    "score": p.score,
+                    "entry": p.entry_price,
+                    "stop_loss": p.stop_loss,
+                    "target": p.target_price,
+                    "expected_return": p.expected_return,
+                }
+                for p in portfolio.positions
+            ]
+        ).sort_values("weight", ascending=False)
+        st.dataframe(positions_df.set_index("symbol"), use_container_width=True)
+        st.bar_chart(positions_df.set_index("symbol")["weight"])
+
+        if portfolio.excluded_symbols:
+            st.caption(f"Excluded (insufficient price history): {', '.join(portfolio.excluded_symbols)}")
+
+        st.caption(
+            "Allocation via Hierarchical Risk Parity, tilted by model confidence and capped by the "
+            "selected risk profile's position/sector limits. Stop-loss/target are ATR-based; expected "
+            "return comes from this strategy's own historical score-decile calibration, not a forecast. "
+            + portfolio.disclaimer
+        )
 
 with tab_backtest:
     st.subheader(f"Backtest: {strategy_id} -- horizon {horizon}")
