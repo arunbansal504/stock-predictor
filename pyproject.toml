@@ -1,0 +1,49 @@
+[project]
+name = "stockpredictor"
+version = "0.1.0"
+description = "AI-powered NSE/BSE stock research & ranking platform (research/education tool, not investment advice)"
+requires-python = ">=3.11"
+readme = "README.md"
+dependencies = [
+    "pandas>=2.2",
+    "numpy>=1.26",
+    "pyarrow>=16.0",
+    "duckdb>=1.0",
+    "sqlalchemy>=2.0",
+    "pydantic>=2.7",
+    "pydantic-settings>=2.3",
+    "pyyaml>=6.0",
+    "python-dotenv>=1.0",
+    "yfinance>=0.2.40",
+    "tenacity>=8.2",
+    "scikit-learn>=1.5",
+    "lightgbm>=4.3",
+    "shap>=0.45",
+    "prefect>=2.19",
+    "fastapi>=0.111",
+    "uvicorn>=0.30",
+    "streamlit>=1.35",
+]
+
+[project.optional-dependencies]
+postgres = ["psycopg2-binary>=2.9"]
+dev = [
+    "pytest>=8.0",
+    "pytest-cov>=5.0",
+    "ruff>=0.5",
+]
+
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"

@@ -1,0 +1,41 @@
+symbol,exchange,name,sector
+RELIANCE,NSE,Reliance Industries,Energy
+TCS,NSE,Tata Consultancy Services,IT
+HDFCBANK,NSE,HDFC Bank,Financials
+INFY,NSE,Infosys,IT
+ICICIBANK,NSE,ICICI Bank,Financials
+HINDUNILVR,NSE,Hindustan Unilever,FMCG
+ITC,NSE,ITC,FMCG
+SBIN,NSE,State Bank of India,Financials
+BHARTIARTL,NSE,Bharti Airtel,Telecom
+KOTAKBANK,NSE,Kotak Mahindra Bank,Financials
+LT,NSE,Larsen & Toubro,Industrials
+AXISBANK,NSE,Axis Bank,Financials
+BAJFINANCE,NSE,Bajaj Finance,Financials
+ASIANPAINT,NSE,Asian Paints,Consumer Durables
+MARUTI,NSE,Maruti Suzuki,Automobile
+SUNPHARMA,NSE,Sun Pharmaceutical,Pharma
+TITAN,NSE,Titan Company,Consumer Durables
+ULTRACEMCO,NSE,UltraTech Cement,Materials
+WIPRO,NSE,Wipro,IT
+HCLTECH,NSE,HCL Technologies,IT
+POWERGRID,NSE,Power Grid Corporation,Utilities
+NTPC,NSE,NTPC,Utilities
+ONGC,NSE,Oil & Natural Gas Corporation,Energy
+TATASTEEL,NSE,Tata Steel,Materials
+TATAMOTORS,NSE,Tata Motors,Automobile
+JSWSTEEL,NSE,JSW Steel,Materials
+GRASIM,NSE,Grasim Industries,Materials
+INDUSINDBK,NSE,IndusInd Bank,Financials
+TECHM,NSE,Tech Mahindra,IT
+DRREDDY,NSE,Dr. Reddy's Laboratories,Pharma
+CIPLA,NSE,Cipla,Pharma
+EICHERMOT,NSE,Eicher Motors,Automobile
+HEROMOTOCO,NSE,Hero MotoCorp,Automobile
+BPCL,NSE,Bharat Petroleum,Energy
+COALINDIA,NSE,Coal India,Energy
+HDFCLIFE,NSE,HDFC Life Insurance,Financials
+SBILIFE,NSE,SBI Life Insurance,Financials
+BRITANNIA,NSE,Britannia Industries,FMCG
+APOLLOHOSP,NSE,Apollo Hospitals,Healthcare
+M&M,NSE,Mahindra & Mahindra,Automobile

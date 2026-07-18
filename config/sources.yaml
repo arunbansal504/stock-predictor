@@ -1,0 +1,31 @@
+# Data source configuration. Each entry maps to a connector in
+# src/stockpredictor/connectors/. Only `enabled: true` sources with an MVP
+# implementation are wired into the Phase 1 pipeline — the rest are documented
+# placeholders for later phases (§5, §27 of the architecture doc), added only
+# when they earn their place.
+
+prices:
+  connector: prices_yfinance
+  enabled: true
+  rate_limit_per_min: 200
+  retry:
+    max_attempts: 5
+    backoff_seconds: 2
+
+fundamentals:
+  connector: fundamentals_yfinance
+  enabled: false # Phase 1 stub; sparse/laggy free data, see §5 caveats
+  rate_limit_per_min: 60
+
+news:
+  connector: news_rss
+  enabled: false # Phase 2
+  rate_limit_per_min: 60
+
+macro:
+  connector: macro_yfinance
+  enabled: false # Phase 1 stub (VIX/USDINR/crude via yfinance tickers)
+
+# Deferred to later phases per §5 "Deferred" list: Polygon, Alpha Vantage,
+# Finnhub, Twelve Data, Quandl, broker feeds (Kite/Fyers/Angel One/IBKR),
+# Twitter/X, options chain, delivery data. Not configured here.

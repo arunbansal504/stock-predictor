@@ -1,0 +1,32 @@
+# Backtest configuration (§25). India-specific cost model — approximate rates,
+# review against current NSE/SEBI schedules before relying on results.
+
+benchmarks:
+  - NIFTY50
+  - NIFTY500
+  - BANKNIFTY
+  - SENSEX
+
+costs:
+  brokerage_bps: 3 # per leg, discount-broker approximation
+  stt_bps: 10 # securities transaction tax (delivery, sell-side)
+  exchange_txn_bps: 0.3
+  gst_bps: 1.8 # 18% GST on brokerage+txn charges, approximated in bps
+  stamp_duty_bps: 1.5 # buy-side
+  slippage_bps: 10 # conservative default; tune per liquidity tier
+
+liquidity:
+  max_pct_of_adv: 5 # cap position size vs. avg daily volume (impact control)
+
+rebalance:
+  cadence: horizon # rebalance at each prediction horizon's cadence
+
+metrics:
+  - cagr
+  - sharpe
+  - sortino
+  - calmar
+  - max_drawdown
+  - win_rate
+  - hit_rate_by_decile
+  - information_coefficient

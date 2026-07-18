@@ -1,0 +1,41 @@
+# Environments
+.venv/
+venv/
+env/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Secrets
+.env
+*.local.yaml
+
+# Data lake (never commit data artifacts)
+data/bronze/**
+data/silver/**
+data/gold/**
+!data/bronze/.gitkeep
+!data/silver/.gitkeep
+!data/gold/.gitkeep
+*.duckdb
+*.parquet
+*.db
+*.sqlite
+*.sqlite3
+
+# Postgres local volume
+infra/pgdata/
+
+# MLflow
+mlruns/
+mlartifacts/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

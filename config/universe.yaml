@@ -1,0 +1,14 @@
+# Universe configuration for Phase 1 (§27, §29 of the architecture doc).
+#
+# The nightly pipeline (orchestration/nightly_flow.py) now sources the real,
+# current NIFTY 500 membership live from NSE (connectors/universe_nse.py) --
+# not this file's seed_file. seed_file is the fallback used only if the live
+# NSE fetch fails, and the CSV/offline path exercised by tests -- see
+# ingestion/universe.py's sync_universe (CSV) vs. sync_universe_from_nse
+# (live) for the two code paths. It is a small, hand-picked set of liquid
+# large-caps, NOT a verified index constituent list itself.
+
+exchange: NSE
+seed_file: config/universe_seed.csv
+target_index: NIFTY500
+yfinance_suffix: ".NS" # NSE ticker suffix used by the price connector

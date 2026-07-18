@@ -1,0 +1,29 @@
+# Model configuration for Phase 1 (§6, §8, §27). Horizons are trading days.
+# This file is read by the (not-yet-built) training/prediction pipeline;
+# checked in now so config shape is settled before modeling code lands.
+
+horizons:
+  - name: 5d
+    trading_days: 5
+  - name: 30d
+    trading_days: 30
+  - name: 90d
+    trading_days: 90
+
+target:
+  type: cross_sectional_excess_return # vs benchmark, per §6
+  benchmark: NIFTY500
+
+base_learners:
+  - lightgbm
+  - linear_baseline # regularized (ElasticNet) honesty baseline, §8
+
+calibration: isotonic
+
+validation:
+  scheme: walk_forward
+  min_train_years: 3
+  test_window_months: 3
+  step_months: 1
+
+random_seed: 42

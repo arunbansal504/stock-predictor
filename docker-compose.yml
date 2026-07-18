@@ -1,0 +1,26 @@
+# MVP infra: a single Postgres instance for app/reference data (users, watchlists,
+# securities, corporate_actions, run_metadata, audit_log). The analytical lake
+# (prices/features/predictions) lives on local disk as DuckDB/Parquet — no
+# container needed for that. Local dev/tests default to SQLite and don't require
+# this at all; bring it up when you want a Postgres-backed run.
+#
+# Usage: docker compose up -d
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: stockpredictor-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: stockpredictor
+      POSTGRES_PASSWORD: stockpredictor
+      POSTGRES_DB: stockpredictor
+    ports:
+      - "5432:5432"
+    volumes:
+      - ./infra/pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U stockpredictor"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
