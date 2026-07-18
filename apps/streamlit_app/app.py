@@ -53,6 +53,10 @@ def get_sessionmaker():
 
 st.set_page_config(page_title="Stock Predictor (Research)", layout="wide")
 st.title("AI Stock Research Dashboard")
+st.markdown(
+    "[![Nightly pipeline](https://github.com/arunbansal504/stock-predictor/actions/workflows/nightly.yml/badge.svg)]"
+    "(https://github.com/arunbansal504/stock-predictor/actions/workflows/nightly.yml)"
+)
 st.warning(DISCLAIMER)
 
 lake = get_lake()
