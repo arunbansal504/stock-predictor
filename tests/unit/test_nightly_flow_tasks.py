@@ -15,11 +15,15 @@ every task-level test through that same expensive path.
 
 from __future__ import annotations
 
+import datetime as dt
+
 import pandas as pd
 
 import stockpredictor.ingestion.universe as universe_ingestion
 from stockpredictor.orchestration import nightly_flow
 from stockpredictor.storage.models import Security
+
+_AS_OF = dt.date(2024, 1, 2)
 
 
 def _fake_nse_df() -> pd.DataFrame:
@@ -28,13 +32,13 @@ def _fake_nse_df() -> pd.DataFrame:
     )
 
 
-def test_task_sync_universe_prefers_live_nse_when_available(db_sessionmaker, monkeypatch):
+def test_task_sync_universe_prefers_live_nse_when_available(db_sessionmaker, tmp_lake, monkeypatch):
     # Patch at the connector level (as looked up inside ingestion/universe.py),
     # not sync_universe_from_nse itself -- its own upsert side effect is
     # exactly what this test needs to exercise, not bypass.
     monkeypatch.setattr(universe_ingestion, "fetch_nifty500_constituents", lambda: _fake_nse_df())
 
-    symbols = nightly_flow.task_sync_universe.fn(db_sessionmaker)
+    symbols = nightly_flow.task_sync_universe.fn(db_sessionmaker, tmp_lake, _AS_OF)
     assert symbols == ["LIVEFAKE"]
 
     session = db_sessionmaker()
@@ -43,15 +47,19 @@ def test_task_sync_universe_prefers_live_nse_when_available(db_sessionmaker, mon
     finally:
         session.close()
 
+    membership = universe_ingestion.read_universe_membership(tmp_lake)
+    assert set(membership["symbol"]) == {"LIVEFAKE"}
+    assert (membership["date"] == pd.Timestamp(_AS_OF)).all()
 
-def test_task_sync_universe_falls_back_to_csv_when_nse_fails(db_sessionmaker, monkeypatch):
+
+def test_task_sync_universe_falls_back_to_csv_when_nse_fails(db_sessionmaker, tmp_lake, monkeypatch):
     def fail():
         raise RuntimeError("simulated NSE outage")
 
     monkeypatch.setattr(universe_ingestion, "fetch_nifty500_constituents", fail)
     monkeypatch.setattr(nightly_flow, "send_alert", lambda *a, **k: False)
 
-    symbols = nightly_flow.task_sync_universe.fn(db_sessionmaker)
+    symbols = nightly_flow.task_sync_universe.fn(db_sessionmaker, tmp_lake, _AS_OF)
     # Falls back to the bundled CSV seed -- should contain the well-known
     # large-caps from config/universe_seed.csv, not the (failed) live fetch.
     assert "RELIANCE" in symbols

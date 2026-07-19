@@ -12,8 +12,11 @@ real anomaly model exists.
 
 from __future__ import annotations
 
+import datetime as dt
+
 import pandas as pd
 
+from stockpredictor.common.pit import filter_as_of
 from stockpredictor.common.types import DataLayer
 from stockpredictor.storage.lake import Lake
 
@@ -25,12 +28,27 @@ DEFAULT_MIN_TURNOVER = 1_000_000.0
 DEFAULT_MAX_ABS_DAILY_RETURN = 0.20  # flag a >20% single-day move as a likely data anomaly
 
 
-def compute_liquidity_and_anomaly_flags(lake: Lake, window: int = 20) -> pd.DataFrame:
-    """Per-symbol, as-of-latest-date liquidity (median turnover) and a
-    same-day anomaly flag, derived purely from silver price data."""
+def compute_liquidity_and_anomaly_flags(
+    lake: Lake, window: int = 20, as_of: dt.date | None = None
+) -> pd.DataFrame:
+    """Per-symbol, as-of-latest-date liquidity (median turnover), a same-day
+    anomaly flag, and the raw closing price (`close_price`) -- derived
+    purely from silver price data, and the one place this pipeline attaches
+    an actual quoted market price to a ranked/scored row (score/rank alone
+    don't say what price the stock was ranked at). Deliberately the raw
+    `close`, not `close_adj`: a user checking this against a live quote
+    wants the actual traded price, not the backward-adjusted series the
+    model trains on internally.
+
+    `as_of`, when given, drops price rows after that date first -- same
+    rationale as features/registry.py's `as_of` (common/trading_calendar.py)."""
     prices = lake.read_all(DataLayer.SILVER, "prices")
     if prices.empty:
         return pd.DataFrame()
+    if as_of is not None:
+        prices = filter_as_of(prices, pd.Timestamp(as_of))
+        if prices.empty:
+            return pd.DataFrame()
 
     rows = []
     for symbol, group in prices.groupby("symbol"):
@@ -44,6 +62,7 @@ def compute_liquidity_and_anomaly_flags(lake: Lake, window: int = 20) -> pd.Data
         rows.append(
             {
                 "symbol": symbol,
+                "close_price": float(group["close"].iloc[-1]),
                 "median_turnover_20d": median_turnover,
                 "latest_daily_return": daily_return,
                 "is_price_anomaly": is_anomalous,

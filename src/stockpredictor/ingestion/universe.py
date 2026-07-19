@@ -13,6 +13,7 @@ Two sources, same downstream schema (symbol, exchange, name, sector):
 
 from __future__ import annotations
 
+import datetime as dt
 from pathlib import Path
 
 import pandas as pd
@@ -21,12 +22,18 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from stockpredictor.common.config import REPO_ROOT, load_yaml_config
 from stockpredictor.common.logging import get_logger
+from stockpredictor.common.types import DataLayer
 from stockpredictor.connectors.universe_nse import fetch_nifty500_constituents
+from stockpredictor.storage.lake import Lake
 from stockpredictor.storage.models import Security
 
 logger = get_logger(__name__)
 
 REQUIRED_COLUMNS = {"symbol", "exchange", "name", "sector"}
+
+MEMBERSHIP_GOLD_DOMAIN = "universe_membership"
+MEMBERSHIP_KEY_COLS = ["date", "symbol"]
+_MEMBERSHIP_FILE_KEY = "membership"
 
 
 def load_universe_csv(csv_path: Path | None = None) -> pd.DataFrame:
@@ -94,6 +101,46 @@ def sync_universe(
     n = _upsert_securities(session_factory, df)
     logger.info("Synced %d securities into universe (source=csv)", n)
     return n
+
+
+def get_active_symbols(session_factory: sessionmaker[Session]) -> list[str]:
+    """Every symbol currently on record in `securities`, regardless of
+    source -- the last-known-good universe. Used as the middle rung of
+    orchestration/nightly_flow.py's universe fallback: if today's live NSE
+    fetch fails, reusing yesterday's already-synced ~500-symbol universe is
+    a much smaller rank-composition shift than collapsing all the way down
+    to the 40-symbol CSV seed (which would make cross-sectional `_xrank`
+    features -- and therefore ranks -- swing sharply for reasons that have
+    nothing to do with any stock's actual behavior)."""
+    session = session_factory()
+    try:
+        rows = session.execute(select(Security.symbol)).scalars()
+        return sorted(rows)
+    finally:
+        session.close()
+
+
+def persist_universe_membership(lake: Lake, as_of: dt.date, symbols: list[str]) -> int:
+    """Snapshot which symbols were in the tradable universe on `as_of`, one
+    row per (date, symbol) -- accrues one snapshot per nightly run so a
+    later backtest can restrict each historical rebalance date to the
+    universe as it stood point-in-time, instead of (the prior behavior)
+    applying TODAY's membership across 5 years of history, which silently
+    excludes delisted/demoted names and includes recently-added winners
+    (survivorship bias). History before this started recording remains
+    biased -- an honest, documented gap; free data provides no retroactive
+    fix for it."""
+    if not symbols:
+        return 0
+    df = pd.DataFrame({"date": [pd.Timestamp(as_of)] * len(symbols), "symbol": symbols})
+    return lake.write(df, DataLayer.GOLD, MEMBERSHIP_GOLD_DOMAIN, _MEMBERSHIP_FILE_KEY, key_cols=MEMBERSHIP_KEY_COLS)
+
+
+def read_universe_membership(lake: Lake) -> pd.DataFrame:
+    """Every recorded (date, symbol) universe-membership snapshot -- see
+    persist_universe_membership. Empty before any nightly run has recorded
+    one."""
+    return lake.read(DataLayer.GOLD, MEMBERSHIP_GOLD_DOMAIN, _MEMBERSHIP_FILE_KEY)
 
 
 def get_security_names(session_factory: sessionmaker[Session], symbols: list[str]) -> dict[str, str]:

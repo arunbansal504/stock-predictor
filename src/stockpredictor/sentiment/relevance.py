@@ -40,14 +40,25 @@ def _company_name_tokens(company_name: str) -> list[str]:
 def is_relevant(text: str, symbol: str, company_name: str) -> bool:
     """True if `text` (title + summary, already concatenated by the caller)
     plausibly refers to this company: the bare symbol as a whole word, or
-    all of the company name's distinctive leading tokens."""
+    all of the company name's distinctive leading tokens.
+
+    The bare-symbol check is deliberately case-SENSITIVE (matched against
+    `text` as written, not `text.lower()`): several NSE tickers are also
+    ordinary English words (e.g. "IDEA", "PAGE", "RAIN") -- lowercasing
+    first would make the ticker indistinguishable from the common word in
+    ordinary prose and false-positive on any article that happens to
+    contain it. Tickers are conventionally written in caps in market
+    context ("IDEA slipped 2% today"), so requiring an exact-case match is
+    a cheap, effective filter for exactly this class of symbol. The company
+    name check stays case-insensitive -- company names don't have this
+    problem, and headlines vary name casing much more than ticker casing."""
     if not text:
         return False
-    lowered = text.lower()
 
-    if re.search(rf"\b{re.escape(symbol.lower())}\b", lowered):
+    if re.search(rf"\b{re.escape(symbol)}\b", text):
         return True
 
+    lowered = text.lower()
     tokens = _company_name_tokens(company_name)
     return all(re.search(rf"\b{re.escape(t.lower())}\b", lowered) for t in tokens)
 

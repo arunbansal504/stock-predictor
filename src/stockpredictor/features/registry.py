@@ -13,9 +13,12 @@ Fundamental/Quality block (features/fundamental.py) -- see
 
 from __future__ import annotations
 
+import datetime as dt
+
 import pandas as pd
 
 from stockpredictor.common.logging import get_logger
+from stockpredictor.common.pit import filter_as_of
 from stockpredictor.common.types import DataLayer
 from stockpredictor.features import technical
 from stockpredictor.features.cross_sectional import add_cross_sectional_rank
@@ -69,16 +72,26 @@ GOLD_DOMAIN = "features"
 GOLD_KEY_COLS = ["symbol", "date"]
 
 
-def build_technical_features_for_universe(lake: Lake) -> pd.DataFrame:
+def build_technical_features_for_universe(lake: Lake, as_of: dt.date | None = None) -> pd.DataFrame:
     """Compute the technical + fundamental blocks for every symbol with
     silver price data, add cross-sectional rank transforms, and return the
     combined feature matrix (not yet written to the lake -- see
     persist_features). Fundamentals are optional: a symbol with no
     fundamentals data yet still gets technical features, with NaN
-    fundamental columns (an honest gap, not a reason to drop the symbol)."""
+    fundamental columns (an honest gap, not a reason to drop the symbol).
+
+    `as_of`, when given, drops any price row after that date before
+    computing anything -- so a stale partial bar already sitting in the
+    lake (written by an earlier intraday run) can't leak into "the latest
+    date" this call computes, regardless of what's physically on disk. See
+    common/trading_calendar.py."""
     prices = lake.read_all(DataLayer.SILVER, "prices")
     if prices.empty:
         return pd.DataFrame()
+    if as_of is not None:
+        prices = filter_as_of(prices, pd.Timestamp(as_of))
+        if prices.empty:
+            return pd.DataFrame()
 
     fundamentals = lake.read_all(DataLayer.SILVER, "fundamentals")
 

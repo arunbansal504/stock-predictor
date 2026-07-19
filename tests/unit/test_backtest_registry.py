@@ -18,9 +18,12 @@ def _result() -> BacktestResult:
     return BacktestResult(
         per_period_returns=pd.Series([0.02, 0.01], index=idx),
         benchmark_returns=pd.Series([0.01, 0.005], index=idx),
+        universe_returns=pd.Series([0.015, 0.008], index=idx),
         ic_by_date=pd.Series([0.1, 0.2], index=idx),
+        turnover_by_date=pd.Series([1.0, 0.5], index=idx),
         metrics={"cagr": 0.15, "sharpe": 1.2, "n_periods": 2},
         benchmark_metrics={"cagr": 0.08, "sharpe": 0.6, "n_periods": 2},
+        universe_metrics={"cagr": 0.10, "sharpe": 0.8, "n_periods": 2},
     )
 
 
@@ -93,9 +96,12 @@ def test_ic_series_drops_nan_values_not_fabricate_them(tmp_lake):
     result = BacktestResult(
         per_period_returns=pd.Series([0.02, 0.01, 0.0], index=idx),
         benchmark_returns=pd.Series([0.01, 0.005, 0.0], index=idx),
+        universe_returns=pd.Series([0.015, 0.008, 0.0], index=idx),
         ic_by_date=pd.Series([0.1, float("nan"), 0.3], index=idx),
+        turnover_by_date=pd.Series([1.0, 0.5, 0.5], index=idx),
         metrics={"cagr": 0.15, "n_periods": 3},
         benchmark_metrics={"cagr": 0.08, "n_periods": 3},
+        universe_metrics={"cagr": 0.10, "n_periods": 3},
     )
     persist_backtest_result(tmp_lake, result, horizon="5d", strategy_id="top_k_v1", run_date=pd.Timestamp("2024-01-01"))
     ic_series = read_latest_ic_series(tmp_lake, "top_k_v1", "5d")

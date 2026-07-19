@@ -33,6 +33,7 @@ def _seed_rankings(tmp_lake, horizon="5d", date="2024-01-01"):
             "horizon": [horizon] * 3,
             "score": [0.8, 0.6, 0.4],
             "rank": [1, 2, 3],
+            "close_price": [2847.30, 3912.10, 512.50],
         }
     )
     persist_rankings(tmp_lake, df, horizon)
@@ -66,6 +67,23 @@ def test_rankings_returns_top_n_with_disclaimer(client, tmp_lake):
     assert "disclaimer" in body and "not investment advice" in body["disclaimer"].lower()
     assert body["data"]["count"] == 2
     assert [r["symbol"] for r in body["data"]["rankings"]] == ["AAA", "BBB"]
+
+
+def test_rankings_includes_close_price(client, tmp_lake):
+    """The share price a stock was ranked at must be visible in the API
+    response, not just its score/rank -- see ranking/engine.py's
+    compute_liquidity_and_anomaly_flags, which is where close_price is
+    attached to every ranked row upstream of this endpoint."""
+    _seed_rankings(tmp_lake)
+    resp = client.get("/rankings", params={"horizon": "5d", "top_n": 3})
+    rankings = resp.json()["data"]["rankings"]
+    assert [r["close_price"] for r in rankings] == pytest.approx([2847.30, 3912.10, 512.50])
+
+
+def test_get_stock_includes_close_price(client, tmp_lake):
+    _seed_rankings(tmp_lake)
+    resp = client.get("/stocks/AAA", params={"horizon": "5d"})
+    assert resp.json()["data"]["close_price"] == pytest.approx(2847.30)
 
 
 def test_rankings_404_when_no_data(client):
@@ -154,9 +172,12 @@ def test_get_backtest_returns_latest_result(client, tmp_lake):
     result = BacktestResult(
         per_period_returns=pd.Series([0.02, 0.01], index=idx),
         benchmark_returns=pd.Series([0.01, 0.005], index=idx),
+        universe_returns=pd.Series([0.015, 0.008], index=idx),
         ic_by_date=pd.Series([0.1, 0.2], index=idx),
+        turnover_by_date=pd.Series([1.0, 0.5], index=idx),
         metrics={"cagr": 0.15, "sharpe": 1.2, "n_periods": 2},
         benchmark_metrics={"cagr": 0.08, "sharpe": 0.6, "n_periods": 2},
+        universe_metrics={"cagr": 0.10, "sharpe": 0.8, "n_periods": 2},
     )
     persist_backtest_result(tmp_lake, result, horizon="5d", strategy_id="top_k_v1")
 
@@ -237,7 +258,17 @@ def _seed_portfolio_scenario(tmp_lake, db_sessionmaker, n_symbols=10, horizon="5
         {"decile": [0, 1], "score_min": [0.0, 0.5], "score_max": [0.49, 1.0], "mean_return": [0.01, 0.04], "median_return": [0.01, 0.04], "n_obs": [10, 10]}
     )
     persist_backtest_result(
-        tmp_lake, BacktestResult(pd.Series(dtype="float64"), pd.Series(dtype="float64"), pd.Series(dtype="float64"), {}, {}),
+        tmp_lake,
+        BacktestResult(
+            pd.Series(dtype="float64"),
+            pd.Series(dtype="float64"),
+            pd.Series(dtype="float64"),
+            pd.Series(dtype="float64"),
+            pd.Series(dtype="float64"),
+            {},
+            {},
+            {},
+        ),
         horizon=horizon, strategy_id="top_k_technical_fundamental_v1", return_calibration=calibration,
     )
 

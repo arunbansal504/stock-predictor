@@ -58,8 +58,36 @@ def ingest_symbol_prices(
     """Fetch, bronze-write, and silver-transform prices for one symbol.
     Returns the resulting silver row count (0 if the fetch failed/was empty)
     — callers (the orchestration DAG) use this to detect per-symbol gaps
-    without the whole run failing."""
+    without the whole run failing.
+
+    If silver data already covers through `end`, skips the network call
+    entirely and returns the existing row count. This is what makes a
+    same-day manual rerun (after an earlier run already ingested through
+    the pinned `end` -- see common/trading_calendar.py) produce byte-
+    identical inputs: no new fetch means no chance of a different price
+    revision or a different set of per-symbol failures reshuffling the
+    universe between runs."""
+    existing = lake.read(DataLayer.SILVER, "prices", symbol)
+    if not existing.empty:
+        existing_max = pd.to_datetime(existing["date"]).max().date()
+        if existing_max >= end:
+            logger.info(
+                "Silver prices for %s already cover through %s (>= end=%s) — skipping fetch",
+                symbol, existing_max, end,
+            )
+            return len(existing)
+
     bronze_df = prices_yfinance.fetch_prices([symbol], start, end, exchange)
+    if bronze_df.empty:
+        return 0
+
+    # Defense in depth against a partial/live bar: yfinance's `end` bound is
+    # a request hint, not a hard guarantee (a provider-side revision or an
+    # in-progress session can still return a row dated after `end`). Every
+    # caller here treats `end` as "the last completed session", so nothing
+    # later may enter the lake regardless of what the connector returned —
+    # see common/trading_calendar.py.
+    bronze_df = bronze_df[pd.to_datetime(bronze_df["date"]) <= pd.Timestamp(end)]
     if bronze_df.empty:
         return 0
 

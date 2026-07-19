@@ -90,11 +90,28 @@ with tab_picks:
     else:
         top = ranked[ranked["rank"] <= top_n].copy()
         st.caption(f"As of {top['date'].max().date()}")
+        if "close_price" in top.columns:
+            st.caption(
+                "`price` is the raw closing price on the date above (not a live quote) -- "
+                "the same price the ranking was computed from."
+            )
 
         # `score` stays the primary ranking/display key (rank_universe already
         # sorts by it) -- everything below is context ON TOP of score, never
-        # a replacement for it.
-        display_cols = ["rank", "symbol", "score", "disagreement"]
+        # a replacement for it. Column order matters here: the compact,
+        # glance-at-a-time columns (rank/symbol/price/score/disagreement)
+        # come first so they're visible without scrolling; the verbose
+        # `confidence` sentence and its supporting rate columns -- useful
+        # detail, but wide and secondary to `score` -- go last, so only
+        # someone who wants that detail needs to scroll for it.
+        display_cols = ["rank", "symbol"]
+        has_close_price = "close_price" in top.columns
+        if has_close_price:
+            display_cols.append("close_price")
+        display_cols += ["score", "disagreement"]
+        has_meta_score = "meta_score" in top.columns
+        if has_meta_score:
+            display_cols.append("meta_score")
         has_separation = "separation_direction" in top.columns
         # Background colors keyed by style name, applied to the `confidence`
         # cell below -- direction-blind styling (treating any "significant"
@@ -102,6 +119,11 @@ with tab_picks:
         # color is driven by the same `separation_direction`/`separation_badge`
         # every other surface uses, not re-derived from the boolean alone.
         BADGE_COLORS = {"positive": "#c6efce", "negative": "#ffc7ce", "neutral": "#f2f2f2"}
+        # Compact label for the table cell -- the full sentence
+        # (separation_badge's `label`) truncates in a dataframe column no
+        # matter where it's placed; the full wording is still used for the
+        # Stock Detail tab's banner below, which has room for it.
+        SHORT_DIRECTION = {"outperform": "Outperform", "underperform": "Underperform", "none": "Low separation"}
         if has_separation:
             badges = [
                 IsotonicCalibrator.separation_badge(
@@ -109,15 +131,20 @@ with tab_picks:
                 )
                 for row in top.itertuples()
             ]
-            top["confidence"] = [b["label"] for b in badges]
+            top["confidence"] = [
+                f"{SHORT_DIRECTION[row.separation_direction]} "
+                f"({row.separation_empirical_rate:.1%} vs {row.separation_base_rate:.1%})"
+                for row in top.itertuples()
+            ]
             top["_confidence_style"] = [b["style"] for b in badges]
             top["empirical_outperform_rate"] = top["separation_empirical_rate"]
             top["horizon_base_rate"] = top["separation_base_rate"]
-            display_cols += ["confidence", "empirical_outperform_rate", "horizon_base_rate"]
-        has_meta_score = "meta_score" in top.columns
-        if has_meta_score:
-            display_cols.append("meta_score")
-        display = top[display_cols].rename(columns={"meta_score": "relative_strength"}).set_index("rank")
+            display_cols += ["empirical_outperform_rate", "horizon_base_rate", "confidence"]
+        display = (
+            top[display_cols]
+            .rename(columns={"meta_score": "relative_strength", "close_price": "price"})
+            .set_index("rank")
+        )
         if has_separation:
             styles = top.set_index("rank")["_confidence_style"]
             styled = display.style.apply(
@@ -141,10 +168,10 @@ with tab_picks:
                 f"with a historically real (statistically significant, two-sided p < "
                 f"{SEPARATION_ALPHA}) departure from this horizon's own base rate -- "
                 f"currently **{horizon_base_rate:.1%}** (the fraction of all historical "
-                "calibration-set rows, across the whole universe, that beat the benchmark "
-                "at this horizon; NOT 50%, since a cap-weighted index's return is pulled "
-                "up by its largest names, so most constituents trail it more often than "
-                "not) -- not a fixed coin flip, and in which direction. Green = confirmed "
+                "calibration-set rows, across the whole universe, whose forward return beat "
+                "that same date's universe median stock; close to but not exactly 50% -- a "
+                "median split isn't perfectly even once ties and unresolved rows are dropped "
+                "-- not a fixed coin flip, and in which direction. Green = confirmed "
                 "historical outperformance *relative to that base rate*; red = confirmed "
                 "historical *under*performance relative to it (a negative signal, not a "
                 "weaker positive one); grey = not statistically distinguishable from it. "
@@ -172,10 +199,16 @@ with tab_detail:
     else:
         symbol = st.selectbox("Symbol", sorted(ranked["symbol"].unique()))
         row = ranked[ranked["symbol"] == symbol].iloc[0]
-        col1, col2, col3 = st.columns(3)
-        col1.metric("Rank", int(row["rank"]))
-        col2.metric("Score (calibrated prob. of outperformance)", f"{row['score']:.3f}")
-        col3.metric("Ensemble disagreement", f"{row['disagreement']:.3f}")
+        has_close_price = "close_price" in row.index and pd.notna(row.get("close_price"))
+        cols = st.columns(4 if has_close_price else 3)
+        cols[0].metric("Rank", int(row["rank"]))
+        if has_close_price:
+            cols[1].metric("Price (close)", f"{row['close_price']:.2f}")
+            cols[2].metric("Score (calibrated prob. of outperformance)", f"{row['score']:.3f}")
+            cols[3].metric("Ensemble disagreement", f"{row['disagreement']:.3f}")
+        else:
+            cols[1].metric("Score (calibrated prob. of outperformance)", f"{row['score']:.3f}")
+            cols[2].metric("Ensemble disagreement", f"{row['disagreement']:.3f}")
         if "separation_direction" in row.index and pd.notna(row.get("separation_direction")):
             badge = IsotonicCalibrator.separation_badge(
                 row["separation_direction"],

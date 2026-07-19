@@ -38,14 +38,29 @@ def _seed_labels(tmp_lake, symbol: str, n: int, seed: int, horizon: str = "5d") 
     tmp_lake.write(df, DataLayer.GOLD, LABELS_DOMAIN, symbol, key_cols=["symbol", "date", "horizon"])
 
 
-def test_get_latest_feature_snapshot_picks_most_recent_row_per_symbol(tmp_lake):
-    _seed_features(tmp_lake, "AAA", n=10, seed=1)
+def test_get_latest_feature_snapshot_picks_the_latest_dates_full_cross_section(tmp_lake):
+    _seed_features(tmp_lake, "AAA", n=15, seed=1)
     _seed_features(tmp_lake, "BBB", n=15, seed=2)
 
     snapshot = predict.get_latest_feature_snapshot(tmp_lake)
+    latest_date = pd.bdate_range("2023-01-01", periods=15)[-1]
     assert len(snapshot) == 2
-    aaa_row = snapshot[snapshot["symbol"] == "AAA"].iloc[0]
-    assert aaa_row["date"] == pd.bdate_range("2023-01-01", periods=10)[-1]
+    assert (snapshot["date"] == latest_date).all()
+
+
+def test_get_latest_feature_snapshot_excludes_symbols_missing_from_the_latest_date(tmp_lake):
+    """A symbol whose most recent bar is an earlier date than the rest of
+    the universe must NOT be scored on that stale row -- its `_xrank`
+    columns were computed against a different day's cross-section, so
+    mixing it into "the latest snapshot" would blend two dates' worth of
+    relative rankings into one score (the bug this function's docstring
+    describes)."""
+    _seed_features(tmp_lake, "AAA", n=10, seed=1)  # stale -- fewer trading days
+    _seed_features(tmp_lake, "BBB", n=15, seed=2)  # latest
+
+    snapshot = predict.get_latest_feature_snapshot(tmp_lake)
+    assert set(snapshot["symbol"]) == {"BBB"}
+    assert (snapshot["date"] == pd.bdate_range("2023-01-01", periods=15)[-1]).all()
 
 
 def test_get_latest_feature_snapshot_empty_when_no_features(tmp_lake):

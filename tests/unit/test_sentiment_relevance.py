@@ -28,6 +28,18 @@ def test_is_relevant_false_for_empty_text():
     assert not is_relevant("", "RELIANCE", "Reliance Industries Limited")
 
 
+def test_is_relevant_rejects_dictionary_word_ticker_in_lowercase_prose():
+    # "IDEA" is both a real NSE ticker (Vodafone Idea) and an ordinary
+    # English word -- lowercase usage in unrelated prose must not match.
+    assert not is_relevant(
+        "The idea behind the new policy is to cut red tape", "IDEA", "Vodafone Idea Limited"
+    )
+
+
+def test_is_relevant_matches_dictionary_word_ticker_when_written_in_caps():
+    assert is_relevant("IDEA shares rallied 5% on strong subscriber growth", "IDEA", "Vodafone Idea Limited")
+
+
 def test_filter_relevant_keeps_only_matching_rows():
     df = pd.DataFrame(
         {

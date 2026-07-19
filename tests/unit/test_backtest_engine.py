@@ -76,6 +76,58 @@ def test_simulate_empty_frame_returns_empty_result_not_a_crash():
     assert np.isnan(result.metrics["sharpe"])
 
 
+def test_turnover_is_full_on_first_period_and_partial_when_holdings_overlap():
+    df = pd.DataFrame(
+        {
+            "date": ["d1", "d1", "d1", "d1", "d2", "d2", "d2", "d2"],
+            "symbol": ["A", "B", "C", "D", "A", "B", "C", "D"],
+            "score": [4, 3, 2, 1, 1, 4, 3, 2],
+            "forward_return": [0.10, 0.08, 0.06, 0.04, 0.01, 0.09, 0.07, 0.05],
+            "benchmark_forward_return": [0.02] * 8,
+        }
+    )
+    cost_model = CostModel(brokerage_bps=0, stt_bps=0, exchange_txn_bps=0, gst_bps=0, stamp_duty_bps=0, slippage_bps=50.0)
+    result = simulate_top_k_strategy(df, horizon_days=5, top_k=2, cost_model=cost_model)
+
+    # d1: top-2 = {A, B} (first period, no prior holdings) -> turnover=1.0.
+    assert result.turnover_by_date.loc["d1"] == pytest.approx(1.0)
+    assert result.per_period_returns.loc["d1"] == pytest.approx(0.09 - 0.01)
+
+    # d2: top-2 by score = {B, C}; overlap with {A, B} is {B} -> turnover=0.5.
+    assert result.turnover_by_date.loc["d2"] == pytest.approx(0.5)
+    assert result.per_period_returns.loc["d2"] == pytest.approx(0.08 - 0.5 * 0.01)
+
+
+def test_universe_returns_is_mean_of_all_resolved_symbols_not_just_top_k():
+    result = simulate_top_k_strategy(_frame(), horizon_days=5, top_k=2, cost_model=ZERO_COST)
+    # d1: mean(0.05, 0.01, 0.03) across all 3 symbols, not just the top-2.
+    assert result.universe_returns.loc["d1"] == pytest.approx((0.05 + 0.01 + 0.03) / 3)
+    assert result.universe_returns.loc["d2"] == pytest.approx((0.02 + 0.06 + 0.04) / 3)
+
+
+def test_hysteresis_band_keeps_an_existing_holding_outside_the_strict_top_k():
+    df = pd.DataFrame(
+        {
+            "date": ["d1"] * 5 + ["d2"] * 5,
+            "symbol": ["A", "B", "C", "D", "E"] * 2,
+            "score": [5, 4, 3, 2, 1, 3, 5, 4, 2, 1],  # d2: A drops to 3rd place
+            "forward_return": [0.10, 0.08, 0.06, 0.04, 0.02, 0.03, 0.09, 0.07, 0.02, 0.01],
+            "benchmark_forward_return": [0.01] * 10,
+        }
+    )
+
+    strict = simulate_top_k_strategy(df, horizon_days=5, top_k=1, cost_model=ZERO_COST)
+    # Without hysteresis, d2's strict top-1 by score is B -> return 0.09.
+    assert strict.per_period_returns.loc["d2"] == pytest.approx(0.09)
+
+    with_band = simulate_top_k_strategy(
+        df, horizon_days=5, top_k=1, cost_model=ZERO_COST, hysteresis_band=3.0
+    )
+    # With hysteresis_band=3.0, A (held from d1, and still within the top-3
+    # on d2) is kept instead of being sold for B -> return is A's, 0.03.
+    assert with_band.per_period_returns.loc["d2"] == pytest.approx(0.03)
+
+
 def test_select_rebalance_dates_keeps_every_nth_trading_day():
     df = pd.DataFrame({"date": list(range(10)), "value": range(10)})
     out = select_rebalance_dates(df, every_n_trading_days=5)

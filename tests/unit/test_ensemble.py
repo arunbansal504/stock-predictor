@@ -315,6 +315,26 @@ def test_top_n_score_does_not_collapse_when_the_underlying_signal_supports_separ
     )
 
 
+def test_fit_is_exactly_reproducible_across_independent_fits():
+    """Same inputs, same random_state, fit twice independently -- must
+    produce bit-identical output. This is the model-level regression guard
+    for the "different ranks every run" bug: LightGBM's default
+    multithreaded histogram construction is not bit-reproducible on its own
+    even with a fixed random_state (gradient-accumulation order depends on
+    thread scheduling), which is exactly what make_lightgbm_classifier's
+    `deterministic=True`/`force_row_wise=True` exist to fix."""
+    X, y, dates = _synthetic_dataset(n=400, seed=8)
+
+    model_a = StackedRanker(random_state=42)
+    model_a.fit(X, y, dates)
+
+    model_b = StackedRanker(random_state=42)
+    model_b.fit(X, y, dates)
+
+    assert np.array_equal(model_a.predict_proba(X), model_b.predict_proba(X))
+    assert np.array_equal(model_a.meta_score(X), model_b.meta_score(X))
+
+
 def test_fit_uses_only_chronologically_earlier_rows_for_base_learners():
     """Correctness-critical: shuffling the row order passed to fit() must not
     change which rows the base learners see -- `dates` alone determines the

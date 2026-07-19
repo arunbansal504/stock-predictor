@@ -25,11 +25,17 @@ from stockpredictor.backtest.calibration_curve import compute_decile_return_cali
 from stockpredictor.backtest.engine import select_rebalance_dates, simulate_top_k_strategy
 from stockpredictor.backtest.registry import persist_backtest_result
 from stockpredictor.common.logging import get_logger
+from stockpredictor.common.trading_calendar import last_completed_nse_session
 from stockpredictor.features.registry import build_technical_features_for_universe, persist_features
 from stockpredictor.ingestion.fundamentals import ingest_symbol_fundamentals
 from stockpredictor.ingestion.macro import ingest_macro_series
 from stockpredictor.ingestion.prices import ingest_symbol_prices
-from stockpredictor.ingestion.universe import load_universe_csv, sync_universe, sync_universe_from_nse
+from stockpredictor.ingestion.universe import (
+    load_universe_csv,
+    persist_universe_membership,
+    sync_universe,
+    sync_universe_from_nse,
+)
 from stockpredictor.labels.registry import build_labels_for_universe, persist_labels
 from stockpredictor.models.dataset import build_training_frame, get_feature_columns
 from stockpredictor.models.ensemble import StackedRanker
@@ -55,7 +61,7 @@ def main() -> None:
     init_db(engine)
     sessionmaker = make_sessionmaker(engine)
 
-    end = dt.date.today()
+    end = last_completed_nse_session()
     start = end - dt.timedelta(days=int(365.25 * YEARS_OF_HISTORY))
 
     logger.info("Step 1/7: syncing universe")
@@ -66,6 +72,7 @@ def main() -> None:
         logger.warning("Live NSE universe fetch failed (%s) -- falling back to the bundled CSV seed", exc)
         sync_universe(sessionmaker)
         symbols = sorted(load_universe_csv()["symbol"].tolist())
+    persist_universe_membership(lake, end, symbols)
     logger.info("Universe: %d symbols", len(symbols))
 
     logger.info("Step 2/7: ingesting prices + benchmark (%s to %s)", start, end)
@@ -84,12 +91,14 @@ def main() -> None:
     logger.info("Fundamentals ingested for %d/%d symbols", fund_ingested, len(symbols))
 
     logger.info("Step 4/7: building technical + fundamental features")
-    features = build_technical_features_for_universe(lake)
+    features = build_technical_features_for_universe(lake, as_of=end)
     persist_features(lake, features)
     logger.info("Feature rows: %d", len(features))
 
     logger.info("Step 5/7: building labels (horizon=%s)", HORIZON_NAME)
-    labels = build_labels_for_universe(lake, benchmark_series=BENCHMARK, horizons={HORIZON_NAME: HORIZON_DAYS})
+    labels = build_labels_for_universe(
+        lake, benchmark_series=BENCHMARK, horizons={HORIZON_NAME: HORIZON_DAYS}, as_of=end
+    )
     persist_labels(lake, labels)
     logger.info("Label rows: %d", len(labels))
 

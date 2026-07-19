@@ -10,12 +10,16 @@ open/high/low too, so ATR/Bollinger/RSI don't see a fake gap at every split —
 the same correctness concern ingestion/prices.py raises for raw returns
 applies equally to every indicator built on OHLC.
 
-Known limitation, documented rather than silently ignored: raw `volume` is
-NOT split-adjusted here (a 1:2 split roughly doubles post-split share volume
-for the same traded value). Rolling volume features computed on a window
-that straddles a split date will show a level shift. Acceptable for MVP;
-revisit if volume features prove valuable enough to be worth the extra
-adjustment logic.
+Volume is adjusted the inverse way: a 1:2 split roughly doubles post-split
+share volume for the same traded value, so pre-split `volume` is scaled UP
+by `close / close_adj` (the reciprocal of the price factor) to bring it into
+post-split-equivalent share-count terms before `obv`/`volume_zscore_20d`
+touch it — otherwise a rolling window straddling a split date shows a level
+shift with no relation to actual trading activity. This adjustment also
+absorbs dividend adjustments (a much smaller, smooth drift, since
+`close_adj` folds those in too) — a documented second-order effect, not
+worth a separate split-only factor unless volume features prove valuable
+enough to justify sourcing exact split ratios from corporate actions.
 
 Every function takes a single symbol's silver price frame (columns: date,
 open, high, low, close, close_adj, volume — see ingestion/prices.py) sorted
@@ -40,6 +44,8 @@ def _adjust_ohlc(df: pd.DataFrame) -> pd.DataFrame:
     out["open_adj"] = out["open"] * factor
     out["high_adj"] = out["high"] * factor
     out["low_adj"] = out["low"] * factor
+    # Inverse of the price factor -- see module docstring.
+    out["volume_adj"] = out["volume"] / factor.replace(0, np.nan)
     return out
 
 
@@ -135,8 +141,9 @@ def compute_realized_vol(df: pd.DataFrame, windows: tuple[int, ...] = VOL_WINDOW
 
 
 def compute_obv(df: pd.DataFrame) -> pd.DataFrame:
-    direction = np.sign(df["close_adj"].diff()).fillna(0)
-    obv = (direction * df["volume"]).cumsum()
+    adj = _adjust_ohlc(df)
+    direction = np.sign(adj["close_adj"].diff()).fillna(0)
+    obv = (direction * adj["volume_adj"]).cumsum()
     out = pd.DataFrame(index=df.index)
     out["obv"] = obv
     return out
@@ -154,7 +161,8 @@ def compute_52w_range(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def compute_volume_zscore(df: pd.DataFrame, window: int = 20) -> pd.DataFrame:
-    vol = df["volume"].astype("float64")
+    adj = _adjust_ohlc(df)
+    vol = adj["volume_adj"].astype("float64")
     mean = vol.rolling(window).mean()
     std = vol.rolling(window).std()
     out = pd.DataFrame(index=df.index)

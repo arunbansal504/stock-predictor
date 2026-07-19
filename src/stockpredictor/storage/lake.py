@@ -77,17 +77,38 @@ class Lake:
             return pd.DataFrame()
         return pd.read_parquet(path)
 
-    def read_all(self, layer: DataLayer, domain: str) -> pd.DataFrame:
+    def read_all(
+        self,
+        layer: DataLayer,
+        domain: str,
+        order_by: tuple[str, ...] | None = ("symbol", "date"),
+    ) -> pd.DataFrame:
         """Read every symbol's file for a (layer, domain) via DuckDB glob —
         the cross-sectional read path feature/ranking code uses (§7: rank
-        features across the whole universe on each date)."""
+        features across the whole universe on each date).
+
+        A parallel multi-file glob scan does not guarantee row order across
+        runs; `order_by` (any of its columns present in this domain's
+        schema) makes the result deterministic run-to-run — important
+        because downstream code (e.g. models/ensemble.py's chronological
+        base/meta split) is order-sensitive. Columns not present in this
+        domain are silently skipped rather than erroring, so one shared
+        default works across domains with different schemas."""
         d = self._dir(layer, domain)
         pattern = str(d / "*.parquet")
         if not any(d.glob("*.parquet")):
             return pd.DataFrame()
         con = duckdb.connect()
         try:
-            return con.execute(f"SELECT * FROM read_parquet('{pattern}')").fetchdf()
+            query = f"SELECT * FROM read_parquet('{pattern}')"
+            if order_by:
+                schema_cols = {
+                    row[0] for row in con.execute(f"DESCRIBE SELECT * FROM read_parquet('{pattern}')").fetchall()
+                }
+                cols = [c for c in order_by if c in schema_cols]
+                if cols:
+                    query += " ORDER BY " + ", ".join(cols)
+            return con.execute(query).fetchdf()
         finally:
             con.close()
 

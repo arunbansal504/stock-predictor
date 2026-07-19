@@ -26,13 +26,14 @@ qualified financial advisor.
 | **Symbol / Ticker** | The short code for a company on the exchange, e.g. `RELIANCE`, `TCS`, `INFY`. |
 | **NSE / NIFTY 500** | NSE = National Stock Exchange (India's main exchange). NIFTY 500 = the 500 largest, most liquid companies listed there — the universe of stocks this app considers. |
 | **Horizon** | How far into the future the prediction looks: `5d` = 5 trading days, `30d` = 30 trading days, `90d` = 90 trading days. A stock can rank very differently on different horizons — a 5-day pick and a 90-day pick are answering different questions. |
-| **Benchmark** | What a stock's performance is measured *against* — here, the NIFTY 500 index itself. The app doesn't ask "will this stock go up?" (almost everything goes up in a bull market) — it asks "will this stock beat the overall market?" |
+| **Benchmark** | The NIFTY 500 index, shown in the Backtest Lab as a comparison point for the *strategy's* overall performance. It is **not** what an individual stock's score is measured against (see Score below) — a common point of confusion, since earlier versions of this app did use the benchmark that way. |
+| **Price** | The stock's actual closing price on the date the ranking was computed (shown next to each rank) — not a live/current quote, and not split-or-dividend-adjusted (it's the real number you'd have seen quoted that day). Shown so a score/rank is never presented without the price it corresponds to. |
 
 ### The score and how much to trust it
 
 | Term | What it means here |
 |---|---|
-| **Score** | A number between 0 and 1 — the model's *calibrated probability* that this stock will outperform the benchmark over the chosen horizon. A score of 0.52 means: historically, when the model gave stocks a score around 0.52, they beat the benchmark about 52% of the time. It is **not** "52% expected gain" — it's a probability of *beating the market*, which is a much harder bar than just "going up." |
+| **Score** | A number between 0 and 1 — the model's *calibrated probability* that this stock's return over the chosen horizon will beat that same day's **median stock in the universe** (not the benchmark index — see Benchmark above). A score of 0.52 means: historically, when the model gave stocks a score around 0.52, they beat the typical stock that day about 52% of the time. It is **not** "52% expected gain" — it's a probability of being *better than a typical pick*, which is a different (and in a strong market, often harder) bar than just "going up," and a different question from "beating the index." |
 | **Rank** | The stock's position when every candidate is sorted by score, best first. Rank 1 = highest score that day. When several stocks share the exact same score (see **Relative strength** below for why that happens honestly), ties are broken by relative strength — not arbitrarily, and not by row order. |
 | **Relative strength** | A second number shown alongside score, used only to order stocks that share the identical score. **It is not a probability** — it's the model's raw, uncalibrated internal signal, before the honesty-check step (calibration) is applied. It's shown because calibration can legitimately give many different stocks the *exact same* score (see Calibration below) — without this number, the ranking among those tied stocks would look arbitrary even though it isn't. Use it only to understand *why* one tied stock outranks another, never as a confidence number on its own. |
 | **Ensemble disagreement** | This app doesn't use one model — it uses several (a tree-based model and a simpler linear one) and blends them. Disagreement measures how much those models *disagree* with each other on this particular stock. Low disagreement = the models broadly agree, which is a mild trust signal. High disagreement = the models see it differently, which is a reason for extra caution, even if the blended score looks good. |
@@ -86,7 +87,8 @@ A **backtest** simulates how a strategy *would have* performed on past data it w
 | Term | What it means here |
 |---|---|
 | **CAGR** | Compound Annual Growth Rate — the smoothed, annualized rate of return, as if it grew steadily every year. |
-| **Sharpe ratio** | Return per unit of risk (see above) — shown for both the **strategy** (this system's picks) and the **benchmark** (just holding the NIFTY 500 index) so you can compare. |
+| **Sharpe ratio** | Return per unit of risk (see above) — shown for the **strategy** (this system's picks), the **benchmark** (just holding the NIFTY 500 index), and the **universe (hold-everything)** baseline (equal-weight, holding every eligible stock) so you can compare all three. |
+| **Universe (hold-everything)** | A third comparison column alongside strategy/benchmark: what you'd have gotten by just holding *every* eligible stock in equal amounts, no ranking involved. This is the more important comparison — beating the cap-weighted benchmark index can happen just from broad market exposure having a good run, with the ranking itself adding nothing. If the strategy doesn't beat this column too, the ranking hasn't yet shown it's actually picking better stocks than a coin flip would. |
 | **Sortino ratio** | Like Sharpe, but only penalizes *downside* volatility (bad swings), not upside swings — a stock going up a lot fast isn't "risk" in the way this ratio counts it. |
 | **Calmar ratio** | Return divided by the worst drawdown experienced — how much return you got per unit of "worst pain endured." |
 | **Max drawdown** | The largest peak-to-trough decline over the backtest period, e.g. `-0.21` means a 21% drop from a high point at some stage. This is the "how bad could it have gotten" number. |
@@ -105,7 +107,7 @@ A **backtest** simulates how a strategy *would have* performed on past data it w
 
 | Term | What it means here |
 |---|---|
-| **Hit rate by score decile** | All past predictions are split into 10 equal-sized groups (deciles) from lowest score (0) to highest score (9), and this shows how often each group's stocks actually beat the benchmark. A trustworthy model shows a **rising staircase** — decile 9 (highest-scored stocks) winning more often than decile 0 (lowest-scored). If every decile looks about the same, the score isn't actually predictive yet. |
+| **Hit rate by score decile** | All past predictions are split into 10 equal-sized groups (deciles) from lowest score (0) to highest score (9), and this shows how often each group's stocks actually beat that same day's median stock (see Score above). A trustworthy model shows a **rising staircase** — decile 9 (highest-scored stocks) winning more often than decile 0 (lowest-scored). If every decile looks about the same, the score isn't actually predictive yet. |
 | **Resolved predictions** | Predictions where enough time has passed for the horizon to actually play out, so we know whether they were right or wrong. Predictions made yesterday for a 90-day horizon aren't "resolved" for 90 days — this number grows slowly, which is normal, not a bug. |
 
 ---
@@ -122,7 +124,7 @@ Streamlit Cloud URL) and use the sidebar to set:
 Then the five tabs:
 
 **Top Picks** — the ranked list for your chosen horizon: rank, symbol,
-score, and disagreement, plus a bar chart. Start here to see what's
+price, score, and disagreement, plus a bar chart. Start here to see what's
 currently ranked highest.
 
 **Stock Detail** — pick any symbol to see its rank/score/disagreement, the
@@ -177,8 +179,9 @@ not broken.
 ## 4. Common beginner mistakes this app is specifically designed to help you avoid
 
 - **Reading "score 0.55" as "55% chance of profit."** It's a probability of
-  *beating the market benchmark*, not of making money at all (the market
-  itself can fall, and a stock can "outperform" while still losing money).
+  *beating that day's typical stock*, not of making money at all (the whole
+  market can fall, and a stock can "outperform" its peers while still
+  losing money in absolute terms).
 - **Treating a backtest Sharpe of 1.4 as a promise.** It's a historical
   measurement over a specific (probably still fairly short) window. Small
   sample size = wide uncertainty, even when the number itself looks good.
@@ -200,6 +203,13 @@ not broken.
   the rankings (which refresh nightly), the backtest is a separate,
   manually-run check — the significance numbers reflect whenever it was
   last run, not today's data.
+- **Only looking at the benchmark comparison, not the "universe
+  (hold-everything)" one.** As of the most recent backtest run, this
+  system's strategy beats the NIFTY 500 benchmark on all three horizons —
+  but *loses* to simply holding the whole equal-weight universe on every
+  one of them. That's the honest current state: real evidence of skill
+  over "beat the index," not yet real evidence of skill over "beat a coin
+  flip." Check both columns, not just one.
 - **Seeing many stocks with the identical score and assuming the ranking
   is broken.** It isn't — that's honest calibration legitimately grouping
   similar predictions together (see Calibration above). The rank order

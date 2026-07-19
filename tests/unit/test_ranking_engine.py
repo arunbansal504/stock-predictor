@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import pandas as pd
+import pytest
 
 from stockpredictor.common.types import DataLayer
 from stockpredictor.ranking.engine import (
@@ -11,12 +12,15 @@ from stockpredictor.ranking.engine import (
 )
 
 
-def _seed_prices(tmp_lake, symbol: str, closes: list[float], volumes: list[int]) -> None:
+def _seed_prices(
+    tmp_lake, symbol: str, closes: list[float], volumes: list[int], raw_closes: list[float] | None = None
+) -> None:
     dates = pd.bdate_range("2024-01-01", periods=len(closes))
     df = pd.DataFrame(
         {
             "symbol": [symbol] * len(closes),
             "date": dates,
+            "close": raw_closes if raw_closes is not None else closes,
             "close_adj": closes,
             "volume": pd.array(volumes, dtype="int64"),
         }
@@ -33,6 +37,20 @@ def test_liquidity_flags_computes_median_turnover_and_no_anomaly(tmp_lake):
     row = flags[flags["symbol"] == "STABLE"].iloc[0]
     assert row["median_turnover_20d"] == 100.0 * 10_000
     assert row["is_price_anomaly"] is False or row["is_price_anomaly"] == False  # noqa: E712
+
+
+def test_liquidity_flags_reports_the_latest_raw_close_price_not_adjusted(tmp_lake):
+    """close_price must be the raw quoted close (what a user would see on a
+    live ticker), not close_adj -- distinct values here catch the two being
+    swapped by mistake."""
+    closes_adj = [98.0, 99.0, 100.0]
+    closes_raw = [196.0, 198.0, 200.0]  # e.g. post a 1:2 split adjustment
+    volumes = [10_000] * 3
+    _seed_prices(tmp_lake, "SPLIT", closes_adj, volumes, raw_closes=closes_raw)
+
+    flags = compute_liquidity_and_anomaly_flags(tmp_lake, window=20)
+    row = flags[flags["symbol"] == "SPLIT"].iloc[0]
+    assert row["close_price"] == pytest.approx(200.0)
 
 
 def test_liquidity_flags_detects_large_single_day_move(tmp_lake):

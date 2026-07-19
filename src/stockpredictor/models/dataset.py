@@ -37,6 +37,12 @@ def build_training_frame(lake: Lake, horizon: str) -> pd.DataFrame:
 
     merged = features.merge(labels, on=["symbol", "date"], how="inner")
     merged = merged.dropna(subset=["outperform"])
+    # Stable sort by (date, symbol) so every consumer -- most importantly
+    # StackedRanker.fit's chronological base/meta split (models/ensemble.py)
+    # -- sees an identical row order run to run. Lake.read_all is already
+    # ordered, but the merge/dropna above can still reorder rows depending
+    # on pandas' join implementation, so re-assert it here explicitly.
+    merged = merged.sort_values(["date", "symbol"], kind="stable")
     return merged.reset_index(drop=True)
 
 

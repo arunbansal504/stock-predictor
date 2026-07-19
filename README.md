@@ -11,11 +11,15 @@ walkthrough of every screen in the dashboard, written for someone with no
 trading background.
 
 An institutional-inspired, personal-scale system that ranks NSE-listed
-stocks by a **calibrated probability of forward outperformance** vs. a
-benchmark, across multiple horizons — with full explainability (SHAP factor
-attribution), walk-forward backtesting, honest calibration reporting, and
-a Portfolio Constructor (HRP allocation, risk-profile position/sector caps,
-ATR stop-loss/target). Built lean and free-tier by design: `yfinance` for
+stocks by a **calibrated probability of forward outperformance** — beating
+that same trading day's *universe median stock*, not a benchmark index (see
+"Honesty notes" for why) — across multiple horizons, with full
+explainability (SHAP factor attribution), walk-forward backtesting, honest
+calibration reporting, and a Portfolio Constructor (HRP allocation,
+risk-profile position/sector caps, ATR stop-loss/target). Every nightly (or
+manual) run is pinned to the last *completed* NSE session, so re-running the
+pipeline on an unchanged day reproduces byte-identical rankings — see
+"Honesty notes". Built lean and free-tier by design: `yfinance` for
 data, Google News RSS + a local FinBERT model for news/sentiment, DuckDB/Parquet
 + SQLite for storage, LightGBM + a linear baseline for modeling, Prefect for
 orchestration, FastAPI + Streamlit for serving.
@@ -52,7 +56,8 @@ python -m venv .venv
 
 # Or run a walk-forward backtest validation (separate from the pipeline above —
 # proves the *ranking* has out-of-sample skill, doesn't publish a live ranking):
-.venv/Scripts/python scripts/run_phase1_smoke.py
+.venv/Scripts/python scripts/run_phase1_smoke.py   # 5d only, full pipeline incl. ingestion
+.venv/Scripts/python scripts/run_backtests.py       # 5d/30d/90d, reuses data already in the lake
 
 # Serve the dashboard (reads whatever the pipeline last published)
 .venv/Scripts/python -m streamlit run apps/streamlit_app/app.py
@@ -76,14 +81,21 @@ LLM, or Telegram alerts (see comments in that file).
   whole pipeline: every dataset distinguishes an event date from a
   *knowable* date, and `models/walk_forward.py` enforces a label-resolution
   embargo on top of that — see `tests/leakage/` for what this catches.
-- **Ensemble**: LightGBM + a regularized-linear honesty baseline, stacked
-  via a meta-learner trained on a held-out chronological split (not
-  refit-on-full-data, to avoid a train/predict distribution mismatch), then
-  isotonic-calibrated (`models/ensemble.py`, `models/calibration.py`).
-- **Backtesting** (`backtest/`): walk-forward with an India-specific
-  transaction-cost model, non-overlapping rebalance-date subsampling
-  (`select_rebalance_dates`), and standard metrics (CAGR, Sharpe, Sortino,
-  Calmar, max drawdown, hit-rate-by-decile, information coefficient).
+- **Ensemble**: LightGBM (deterministic mode — see below) + a
+  regularized-linear honesty baseline, stacked via a meta-learner, then
+  isotonic-calibrated -- a three-way *chronological* split (base learners /
+  meta-learner / calibrator), not two, so the calibrator is fit on truly
+  out-of-sample meta-learner predictions, never on rows the meta-learner
+  itself trained on (`models/ensemble.py`, `models/calibration.py`).
+- **Backtesting** (`backtest/`): walk-forward with an India-specific,
+  turnover-aware transaction-cost model (a position held over from the
+  prior rebalance isn't charged a fresh round trip), non-overlapping
+  rebalance-date subsampling (`select_rebalance_dates`), and standard
+  metrics (CAGR, Sharpe, Sortino, Calmar, max drawdown, hit-rate-by-decile,
+  information coefficient) reported for the strategy, the cap-weighted
+  benchmark, *and* an equal-weight "hold the whole universe" baseline —
+  beating the benchmark alone isn't evidence of ranking skill if simply
+  holding everything would have done even better (see "Honesty notes").
   `backtest/significance.py` goes one step further than reporting a mean
   IC: a t-test against "mean IC is actually zero," a distribution-free
   bootstrap confidence interval, sub-period stability (is the edge steady
@@ -91,7 +103,8 @@ LLM, or Telegram alerts (see comments in that file).
   the t-test's independence assumption) — surfaced in the Backtest Lab
   tab. Not run by the nightly pipeline (which never re-runs the
   walk-forward backtest at all) — only when a backtest script
-  (`scripts/run_phase1_smoke.py`) is run manually.
+  (`scripts/run_phase1_smoke.py` for 5d, `scripts/run_backtests.py` for all
+  three published horizons) is run manually.
 - **Explainability** (`explain/`): SHAP on the LightGBM base learner,
   aggregated into factor blocks (Momentum/Trend, Oscillators,
   Volatility/Risk, Volume/Liquidity, Fundamental/Quality) with top
@@ -122,7 +135,11 @@ LLM, or Telegram alerts (see comments in that file).
   monitoring (`monitoring/`).
 - **Serving**: FastAPI (`api/app.py`) and a Streamlit dashboard
   (`apps/streamlit_app/app.py`) both read pre-computed Gold-layer
-  artifacts — neither ever triggers model inference on demand.
+  artifacts — neither ever triggers model inference on demand. Every
+  ranked row carries `close_price` — the raw (not split/dividend-adjusted)
+  closing price the ranking was actually computed from
+  (`ranking/engine.py`), so a score/rank is never shown without the price
+  it corresponds to.
 
 Every design decision above has a documented rationale in the module
 docstrings — start there before changing behavior, not just the code.
@@ -230,12 +247,23 @@ enough calendar time has passed to evaluate it out-of-sample honestly.
 The pipeline fetches NSE's real, current NIFTY 500 constituent list live
 (`connectors/universe_nse.py`, `ind_nifty500list.csv` from NSE's archives)
 at the start of every run — not a hand-maintained approximation. If that
-fetch fails, it falls back to the small 40-symbol seed CSV
-(`config/universe_seed.csv`) and logs/alerts about it; that CSV is
-scaffolding, kept for offline tests and as a documented fallback, not
-meant to be the primary universe. Newer/smaller constituents will
-naturally have less price history than large-caps — per-symbol partial
-history is handled gracefully, not treated as a failure.
+fetch fails, it falls back to yesterday's already-synced universe
+(last-known-good, from the `securities` table) rather than collapsing
+straight to the small 40-symbol seed CSV (`config/universe_seed.csv`) — a
+sudden ~500 → 40 symbol drop would itself reshuffle every cross-sectional
+feature and swing ranks for reasons unrelated to any stock's actual
+behavior. The CSV is the last resort, for an empty/fresh database with no
+prior sync. Newer/smaller constituents will naturally have less price
+history than large-caps — per-symbol partial history is handled
+gracefully, not treated as a failure.
+
+Every run also snapshots that day's resolved membership list to the
+`universe_membership` gold domain (`ingestion/universe.py`), so a future
+backtest can eventually restrict each historical rebalance date to the
+universe as it stood point-in-time, instead of applying today's membership
+across years of history (survivorship bias). Accrues going forward only —
+history before this started recording remains biased; free data provides
+no retroactive fix for that.
 
 ## Honesty notes (read before trusting any output)
 
@@ -243,6 +271,23 @@ history is handled gracefully, not treated as a failure.
 - Calibration and out-of-sample skill (Model Transparency tab / `/accuracy`
   endpoint) only become meaningful after the pipeline has run for enough
   days that predictions have actually resolved.
+- **Determinism**: every run — nightly or manual — pins its data cutoff to
+  the last *completed* NSE session (`common/trading_calendar.py`), so
+  re-running the pipeline the same day, before tomorrow's close, with
+  nothing else changed reproduces byte-identical rankings. If two runs on
+  the same day *do* produce different ranks, that's a regression, not
+  expected noise — `tests/integration/test_determinism.py` guards this.
+- **The model does not yet demonstrate real ranking skill**, as of the most
+  recent `scripts/run_backtests.py` run: on all three published horizons
+  (5d/30d/90d), the strategy beats the cap-weighted NIFTY 500 benchmark,
+  but *underperforms simply holding the whole equal-weight universe* — on
+  CAGR and every risk-adjusted metric. 30d's mean IC was slightly negative.
+  Beating the benchmark alone is not evidence of skill here — see the
+  `universe (hold-everything)` column `simulate_top_k_strategy` (and the
+  Backtest Lab tab) reports specifically to catch this. Don't treat current
+  rankings as validated for real allocation decisions; re-run
+  `scripts/run_backtests.py` periodically as more history accrues and
+  check this comparison yourself before trusting it.
 
 ## Project layout
 

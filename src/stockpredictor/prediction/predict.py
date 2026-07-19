@@ -11,8 +11,11 @@ models/ensemble.py) already keeps this leak-safe.
 
 from __future__ import annotations
 
+import datetime as dt
+
 import pandas as pd
 
+from stockpredictor.common.pit import filter_as_of
 from stockpredictor.common.types import DataLayer
 from stockpredictor.features.registry import GOLD_DOMAIN as FEATURES_DOMAIN
 from stockpredictor.models.dataset import build_training_frame, get_feature_columns
@@ -20,15 +23,36 @@ from stockpredictor.models.ensemble import StackedRanker
 from stockpredictor.storage.lake import Lake
 
 
-def get_latest_feature_snapshot(lake: Lake) -> pd.DataFrame:
-    """The most recent feature row per symbol -- what a live run would
-    actually score. No label is needed here (that's the point: it's the
-    future we're trying to predict)."""
+def get_latest_feature_snapshot(lake: Lake, as_of: dt.date | None = None) -> pd.DataFrame:
+    """Every symbol's feature row for the single most recent date -- one
+    coherent cross-section, which is what a live run would actually score.
+    No label is needed here (that's the point: it's the future we're trying
+    to predict).
+
+    Deliberately NOT "the most recent row per symbol": `_xrank` columns
+    (features/cross_sectional.py) are percentiles computed within each
+    date's cross-section, so a symbol whose latest bar is a stale date
+    would carry an `_xrank` computed against a *different* day's universe
+    -- mixing cross-sections that don't mean the same thing. A symbol with
+    no bar on the latest date is honestly excluded from that day's ranking
+    rather than scored on stale data.
+
+    `as_of`, when given, drops feature rows after that date first -- same
+    rationale as features/registry.py's `as_of` (common/trading_calendar.py):
+    a stale partial bar already on disk can't be picked up as "latest"."""
     features = lake.read_all(DataLayer.GOLD, FEATURES_DOMAIN)
     if features.empty:
         return features
-    features = features.sort_values("date")
-    return features.groupby("symbol", as_index=False).tail(1).reset_index(drop=True)
+    if as_of is not None:
+        features = filter_as_of(features, pd.Timestamp(as_of))
+        if features.empty:
+            return features
+    latest_date = features["date"].max()
+    return (
+        features[features["date"] == latest_date]
+        .sort_values("symbol", kind="stable")
+        .reset_index(drop=True)
+    )
 
 
 def train_production_model(
@@ -47,13 +71,15 @@ def train_production_model(
     return model, feature_cols
 
 
-def score_universe(lake: Lake, horizon: str, random_state: int = 42) -> pd.DataFrame:
+def score_universe(
+    lake: Lake, horizon: str, random_state: int = 42, as_of: dt.date | None = None
+) -> pd.DataFrame:
     """Train a production model for `horizon` and score the latest feature
     snapshot for every symbol with feature history. Returns symbol, date,
     horizon, score (calibrated probability of outperformance), disagreement
     (§6: ensemble-disagreement component of confidence)."""
     model, feature_cols = train_production_model(lake, horizon, random_state)
-    snapshot = get_latest_feature_snapshot(lake)
+    snapshot = get_latest_feature_snapshot(lake, as_of=as_of)
     if snapshot.empty:
         return pd.DataFrame()
 

@@ -35,6 +35,7 @@ from prefect import flow, task
 from prefect.cache_policies import NO_CACHE
 
 from stockpredictor.common.logging import get_logger
+from stockpredictor.common.trading_calendar import last_completed_nse_session
 from stockpredictor.explain.registry import persist_explanations
 from stockpredictor.explain.signals import explain_predictions
 from stockpredictor.features.registry import build_technical_features_for_universe, persist_features
@@ -44,8 +45,10 @@ from stockpredictor.ingestion.macro import ingest_macro_series
 from stockpredictor.ingestion.news import ingest_symbol_news
 from stockpredictor.ingestion.prices import ingest_symbol_prices
 from stockpredictor.ingestion.universe import (
+    get_active_symbols,
     get_security_names,
     load_universe_csv,
+    persist_universe_membership,
     sync_universe,
     sync_universe_from_nse,
 )
@@ -78,18 +81,39 @@ DEFAULT_BENCHMARK = "NIFTY500"
 
 
 @task(name="sync_universe", cache_policy=NO_CACHE)
-def task_sync_universe(sessionmaker) -> list[str]:
-    """Prefer NSE's live, current NIFTY 500 membership; fall back to the
-    bundled CSV seed if NSE is unreachable (§5: every free/unofficial
-    source needs a documented fallback, not a hard pipeline failure)."""
+def task_sync_universe(sessionmaker, lake: Lake, as_of: dt.date) -> list[str]:
+    """Prefer NSE's live, current NIFTY 500 membership. If NSE is
+    unreachable, fall back to yesterday's already-synced universe (last-
+    known-good, from `securities`) rather than jumping straight to the
+    40-symbol CSV seed -- a sudden ~500 -> 40 symbol collapse would itself
+    reshuffle every cross-sectional `_xrank` feature (features/cross_sectional.py)
+    and swing ranks for reasons unrelated to any stock's actual behavior.
+    The CSV is the last resort, for an empty/fresh database with no prior
+    sync to fall back to (§5: every free/unofficial source needs a
+    documented fallback, not a hard pipeline failure).
+
+    Every resolved symbol list is also snapshotted to the
+    `universe_membership` gold domain, keyed by `as_of` -- see
+    ingestion/universe.py's persist_universe_membership for why: without
+    this, a future backtest has no record of which symbols were actually
+    tradable on a given historical date and must fall back to applying
+    today's membership across all of history (survivorship bias)."""
     try:
         df = sync_universe_from_nse(sessionmaker)
-        return sorted(df["symbol"].tolist())
+        symbols = sorted(df["symbol"].tolist())
     except Exception as exc:
-        logger.warning("Live NSE universe fetch failed (%s) -- falling back to the bundled CSV seed", exc)
-        send_alert(f"NSE universe fetch failed, using CSV fallback: {exc}", level="warning")
-        sync_universe(sessionmaker)
-        return sorted(load_universe_csv()["symbol"].tolist())
+        logger.warning("Live NSE universe fetch failed (%s) -- falling back to last-known-good universe", exc)
+        send_alert(f"NSE universe fetch failed, using last-known-good fallback: {exc}", level="warning")
+        known_good = get_active_symbols(sessionmaker)
+        if known_good:
+            symbols = known_good
+        else:
+            logger.warning("No last-known-good universe on record -- falling back to the bundled CSV seed")
+            sync_universe(sessionmaker)
+            symbols = sorted(load_universe_csv()["symbol"].tolist())
+
+    persist_universe_membership(lake, as_of, symbols)
+    return symbols
 
 
 @task(name="ingest_prices_and_macro", retries=1, retry_delay_seconds=30, cache_policy=NO_CACHE)
@@ -162,10 +186,10 @@ def task_check_freshness(lake: Lake) -> None:
 
 
 @task(name="build_features", cache_policy=NO_CACHE)
-def task_build_features(lake: Lake) -> int:
+def task_build_features(lake: Lake, as_of: dt.date | None = None) -> int:
     from stockpredictor.features.registry import ALL_FEATURE_COLUMNS
 
-    features = build_technical_features_for_universe(lake)
+    features = build_technical_features_for_universe(lake, as_of=as_of)
     check_non_empty(features, stage="build_features")
     rows = persist_features(lake, features)
 
@@ -187,16 +211,20 @@ def task_build_features(lake: Lake) -> int:
 
 
 @task(name="build_labels", cache_policy=NO_CACHE)
-def task_build_labels(lake: Lake, benchmark: str, horizons: dict[str, int]) -> int:
-    labels = build_labels_for_universe(lake, benchmark_series=benchmark, horizons=horizons)
+def task_build_labels(
+    lake: Lake, benchmark: str, horizons: dict[str, int], as_of: dt.date | None = None
+) -> int:
+    labels = build_labels_for_universe(lake, benchmark_series=benchmark, horizons=horizons, as_of=as_of)
     check_non_empty(labels, stage="build_labels")
     return persist_labels(lake, labels)
 
 
 @task(name="predict_rank_explain", cache_policy=NO_CACHE)
-def task_predict_rank_explain(lake: Lake, horizon: str, top_k: int, top_n_explain: int) -> int:
+def task_predict_rank_explain(
+    lake: Lake, horizon: str, top_k: int, top_n_explain: int, as_of: dt.date | None = None
+) -> int:
     model, feature_cols = train_production_model(lake, horizon)
-    snapshot = get_latest_feature_snapshot(lake)
+    snapshot = get_latest_feature_snapshot(lake, as_of=as_of)
     check_non_empty(snapshot, stage=f"predict[{horizon}]")
 
     X = snapshot[feature_cols]
@@ -223,7 +251,7 @@ def task_predict_rank_explain(lake: Lake, horizon: str, top_k: int, top_n_explai
     )
     persist_predictions(lake, scored)
 
-    flags = compute_liquidity_and_anomaly_flags(lake)
+    flags = compute_liquidity_and_anomaly_flags(lake, as_of=as_of)
     filtered = apply_ranking_filters(scored, flags)
     check_non_empty(filtered, stage=f"rank[{horizon}]")
     ranked = rank_universe(filtered)
@@ -257,11 +285,18 @@ def nightly_pipeline(
     init_db(engine)
     sessionmaker = make_sessionmaker(engine)
 
-    end = dt.date.today()
+    # Pinned to the last *completed* NSE session, not dt.date.today() -- an
+    # intraday manual rerun must see the identical set of resolved trading
+    # days as any other run before tomorrow's close, or it retrains on a
+    # different "latest" bar and produces different ranks. See
+    # common/trading_calendar.py.
+    end = last_completed_nse_session()
     start = end - dt.timedelta(days=int(365.25 * years_of_history))
 
     try:
-        symbols = run_tracked_stage(sessionmaker, run_id, "sync_universe", task_sync_universe, sessionmaker)
+        symbols = run_tracked_stage(
+            sessionmaker, run_id, "sync_universe", task_sync_universe, sessionmaker, lake, end
+        )
         run_tracked_stage(
             sessionmaker, run_id, "ingest_prices_and_macro",
             task_ingest_prices_and_macro, lake, symbols, start, end, benchmark,
@@ -273,13 +308,15 @@ def nightly_pipeline(
         )
         run_tracked_stage(sessionmaker, run_id, "ingest_fundamentals", task_ingest_fundamentals, lake, symbols)
         run_tracked_stage(sessionmaker, run_id, "ingest_news", task_ingest_news, lake, sessionmaker, symbols)
-        run_tracked_stage(sessionmaker, run_id, "build_features", task_build_features, lake)
-        run_tracked_stage(sessionmaker, run_id, "build_labels", task_build_labels, lake, benchmark, horizons)
+        run_tracked_stage(sessionmaker, run_id, "build_features", task_build_features, lake, end)
+        run_tracked_stage(
+            sessionmaker, run_id, "build_labels", task_build_labels, lake, benchmark, horizons, end
+        )
 
         for horizon in horizons:
             run_tracked_stage(
                 sessionmaker, run_id, f"predict_rank_explain[{horizon}]",
-                task_predict_rank_explain, lake, horizon, top_k, top_n_explain,
+                task_predict_rank_explain, lake, horizon, top_k, top_n_explain, end,
             )
     except Exception as exc:
         # run_tracked_stage already recorded which stage failed in

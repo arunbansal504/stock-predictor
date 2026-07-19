@@ -34,6 +34,12 @@ def ingest_macro_series(
     if df.empty:
         return 0
 
+    # Defense in depth against a partial/live bar -- same rationale as
+    # ingestion/prices.py's `end` guard (see common/trading_calendar.py).
+    df = df[pd.to_datetime(df["date"]) <= pd.Timestamp(end)]
+    if df.empty:
+        return 0
+
     total = 0
     for name, group in df.groupby("series"):
         total += lake.write(group, DataLayer.SILVER, DOMAIN, name, key_cols=KEY_COLS)

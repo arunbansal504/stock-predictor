@@ -31,6 +31,14 @@ def make_lightgbm_classifier(random_state: int = 42) -> LGBMClassifier:
         min_child_samples=30,
         random_state=random_state,
         verbosity=-1,
+        # A fixed random_state alone doesn't make LightGBM's multithreaded
+        # histogram construction bit-reproducible -- gradient accumulation
+        # order depends on thread scheduling, which can nudge split gains
+        # and occasionally pick a different split. `deterministic=True`
+        # (which requires forcing row- or col-wise histograms) fixes that
+        # without pinning num_threads=1, so training stays parallel.
+        deterministic=True,
+        force_row_wise=True,
     )
 
 
@@ -62,21 +70,30 @@ class StackedRanker:
     """LightGBM + linear-baseline stack with a logistic meta-learner and
     isotonic calibration.
 
-    Correctness note: base learners are trained ONLY on the earlier
-    (chronological) portion of the training data (`base_frac`); the later
-    portion is held out to generate out-of-fold-equivalent predictions used
-    to fit the meta-learner and calibrator. Base learners are deliberately
-    NOT refit on the full training set afterward -- doing so would create a
-    train/predict distribution mismatch (the meta-learner would be scoring
-    outputs from different models than the ones it learned to combine),
-    which is a leak just as real as a lookahead in the raw data. The
-    trade-off is using somewhat less data for the base learners;
-    correctness wins over data efficiency here.
+    Correctness note: this is a three-way chronological split, not two --
+    base learners train on the earliest slice (`base_frac`); the next slice
+    (`meta_frac`) is held out to generate out-of-fold-equivalent predictions
+    used to fit the meta-learner; the final slice is held out *again* to fit
+    the calibrator on the meta-learner's out-of-sample predictions. Fitting
+    the calibrator on the meta-learner's own training rows (an earlier
+    version of this class did exactly that) contradicts
+    models/calibration.py's own documented requirement -- "never on the
+    same rows a base model trained on" -- because the meta-learner IS a
+    model, and predictions on its own training rows are in-sample for it
+    even though they're out-of-sample for the base learners underneath.
+    Nothing is refit on the full training set afterward -- doing so would
+    create a train/predict distribution mismatch (the meta-learner would be
+    scoring outputs from a differently-fit base model than the one it
+    learned to combine, and the calibrator would be calibrating a
+    differently-fit meta-learner), which is a leak just as real as a
+    lookahead in the raw data. The trade-off is using less data for each
+    stage; correctness wins over data efficiency here.
     """
 
-    def __init__(self, random_state: int = 42, base_frac: float = 0.75) -> None:
+    def __init__(self, random_state: int = 42, base_frac: float = 0.6, meta_frac: float = 0.2) -> None:
         self.random_state = random_state
         self.base_frac = base_frac
+        self.meta_frac = meta_frac
         self.lgbm = make_lightgbm_classifier(random_state)
         self.linear = make_linear_baseline(random_state)
         self.meta = LogisticRegression(max_iter=1000, random_state=random_state)
@@ -88,24 +105,28 @@ class StackedRanker:
         X_sorted = X.iloc[order].reset_index(drop=True)
         y_sorted = np.asarray(y).astype(int)[order]
 
-        split_idx = int(len(X_sorted) * self.base_frac)
-        if split_idx < 10 or (len(X_sorted) - split_idx) < 10:
+        n = len(X_sorted)
+        base_end = int(n * self.base_frac)
+        meta_end = int(n * (self.base_frac + self.meta_frac))
+        base_n, meta_n, calib_n = base_end, meta_end - base_end, n - meta_end
+        if base_n < 10 or meta_n < 10 or calib_n < 10:
             raise ValueError(
-                f"Not enough rows ({len(X_sorted)}) to split into base/meta "
-                "training sets -- need at least ~10 rows on each side."
+                f"Not enough rows ({n}) to split into base/meta/calibration training "
+                f"sets (got {base_n}/{meta_n}/{calib_n}) -- need at least ~10 rows in each."
             )
 
-        X_base, y_base = X_sorted.iloc[:split_idx], y_sorted[:split_idx]
-        X_meta, y_meta = X_sorted.iloc[split_idx:], y_sorted[split_idx:]
+        X_base, y_base = X_sorted.iloc[:base_end], y_sorted[:base_end]
+        X_meta, y_meta = X_sorted.iloc[base_end:meta_end], y_sorted[base_end:meta_end]
+        X_calib, y_calib = X_sorted.iloc[meta_end:], y_sorted[meta_end:]
 
         self.lgbm.fit(X_base, y_base)
         self.linear.fit(X_base, y_base)
 
-        meta_features = self._base_predictions(X_meta)
-        self.meta.fit(meta_features, y_meta)
+        meta_train_features = self._base_predictions(X_meta)
+        self.meta.fit(meta_train_features, y_meta)
 
-        meta_raw_scores = self.meta.predict_proba(meta_features)[:, 1]
-        self.calibrator.fit(meta_raw_scores, y_meta)
+        calib_meta_scores = self.meta.predict_proba(self._base_predictions(X_calib))[:, 1]
+        self.calibrator.fit(calib_meta_scores, y_calib)
 
         self._fitted = True
         return self
