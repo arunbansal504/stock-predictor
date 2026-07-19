@@ -26,7 +26,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 import pandas as pd
 
-from stockpredictor.backtest.calibration_curve import compute_decile_return_calibration
+from stockpredictor.backtest.calibration_curve import compute_return_calibration
 from stockpredictor.backtest.engine import BacktestResult, select_rebalance_dates, simulate_top_k_strategy
 from stockpredictor.backtest.registry import persist_backtest_result
 from stockpredictor.common.logging import get_logger
@@ -110,7 +110,7 @@ def backtest_horizon(lake: Lake, horizon_name: str, horizon_days: int) -> Backte
     scored = pd.concat(scored_frames, ignore_index=True)
 
     result = simulate_top_k_strategy(scored, horizon_days=horizon_days, top_k=TOP_K)
-    return_calibration = compute_decile_return_calibration(scored["score"], scored["forward_return"])
+    return_calibration = compute_return_calibration(scored["score"], scored["forward_return"])
     persist_backtest_result(
         lake, result, horizon=horizon_name, strategy_id=STRATEGY_ID, return_calibration=return_calibration,
     )

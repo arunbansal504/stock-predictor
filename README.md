@@ -127,8 +127,8 @@ LLM, or Telegram alerts (see comments in that file).
   covariance estimates, unlike Markowitz), tilted by model confidence and
   capped by a Conservative/Balanced/Aggressive risk profile's
   position/sector limits. Per-stock stop-loss/target are ATR-based;
-  portfolio "expected return" comes from the backtest's own
-  score-decile-conditional historical realized returns
+  portfolio "expected return" comes from the backtest's own isotonic
+  (monotonic, interpolated) score-conditional historical realized returns
   (`backtest/calibration_curve.py`), never fabricated from the classifier's
   score directly (it was never calibrated for return *magnitude*, only
   probability). Not model inference — a deterministic optimization over

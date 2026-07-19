@@ -21,7 +21,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 import pandas as pd
 
-from stockpredictor.backtest.calibration_curve import compute_decile_return_calibration
+from stockpredictor.backtest.calibration_curve import compute_return_calibration
 from stockpredictor.backtest.engine import select_rebalance_dates, simulate_top_k_strategy
 from stockpredictor.backtest.registry import persist_backtest_result
 from stockpredictor.common.logging import get_logger
@@ -160,7 +160,7 @@ def main() -> None:
     # Portfolio Constructor's "expected return" figure -- grounded in this
     # backtest's own out-of-fold history, not fabricated from the
     # classifier's score (which was never calibrated for return magnitude).
-    return_calibration = compute_decile_return_calibration(scored["score"], scored["forward_return"])
+    return_calibration = compute_return_calibration(scored["score"], scored["forward_return"])
     persist_backtest_result(
         lake, result, horizon=HORIZON_NAME, strategy_id="top_k_technical_fundamental_v1",
         return_calibration=return_calibration,

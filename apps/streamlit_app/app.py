@@ -271,9 +271,9 @@ with tab_detail:
                 )
                 st.caption(
                     f"Not a forecast -- a linear-in-time extrapolation of this strategy's own "
-                    f"historical score-decile calibration (from the nearest published horizon, "
-                    f"{horizon}) to {int(whatif_days)} day(s), not a dedicated calibration for "
-                    "that exact day count -- the further from a published horizon, the less "
+                    f"historical score-conditional return calibration (from the nearest published "
+                    f"horizon, {horizon}) to {int(whatif_days)} day(s), not a dedicated calibration "
+                    "for that exact day count -- the further from a published horizon, the less "
                     "this reflects any actual evidence. Derived from historical calibration, "
                     "same as the Portfolio Constructor tab's expected return."
                 )
@@ -378,7 +378,7 @@ with tab_portfolio:
         st.caption(
             "Allocation via Hierarchical Risk Parity, tilted by model confidence and capped by the "
             "selected risk profile's position/sector limits. Stop-loss/target are ATR-based; expected "
-            "return comes from this strategy's own historical score-decile calibration, not a forecast. "
+            "return comes from this strategy's own historical score-conditional return calibration, not a forecast. "
             + portfolio.disclaimer
         )
 

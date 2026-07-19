@@ -36,8 +36,13 @@ def test_compute_stock_targets_combines_bracket_and_calibration():
     calibration = pd.DataFrame(
         {"decile": [0, 1], "score_min": [0.0, 0.5], "score_max": [0.49, 1.0], "mean_return": [0.01, 0.06], "median_return": [0.01, 0.06], "n_obs": [10, 10]}
     )
+    # score=0.75 is exactly the second block's center ((0.5+1.0)/2) --
+    # lookup_expected_return interpolates between block centers (see
+    # test_calibration_curve.py for that math itself), so an exact score
+    # here isolates "does calibration flow through correctly" (this test's
+    # actual concern) from the interpolation arithmetic.
     result = compute_stock_targets(
-        entry_price=100.0, atr=2.0, score=0.7, stop_multiplier=2.0, reward_risk_ratio=2.0, return_calibration=calibration
+        entry_price=100.0, atr=2.0, score=0.75, stop_multiplier=2.0, reward_risk_ratio=2.0, return_calibration=calibration
     )
     assert result.entry_price == 100.0
     assert result.stop_loss == pytest.approx(96.0)
@@ -57,7 +62,9 @@ def test_estimate_return_for_days_is_a_no_op_when_n_days_equals_reference_horizo
     calibration = pd.DataFrame(
         {"decile": [0, 1], "score_min": [0.0, 0.5], "score_max": [0.49, 1.0], "mean_return": [0.01, 0.06], "median_return": [0.01, 0.06], "n_obs": [10, 10]}
     )
-    result = estimate_return_for_days(score=0.7, return_calibration=calibration, n_days=5, reference_horizon_days=5)
+    # score=0.75 is exactly the second block's center -- see the sibling
+    # test above for why this test uses an exact-center score.
+    result = estimate_return_for_days(score=0.75, return_calibration=calibration, n_days=5, reference_horizon_days=5)
     assert result == pytest.approx(0.06)
 
 
@@ -70,7 +77,7 @@ def test_estimate_return_for_days_scales_linearly_with_time():
     calibration = pd.DataFrame(
         {"decile": [0, 1], "score_min": [0.0, 0.5], "score_max": [0.49, 1.0], "mean_return": [0.01, 0.06], "median_return": [0.01, 0.06], "n_obs": [10, 10]}
     )
-    result = estimate_return_for_days(score=0.7, return_calibration=calibration, n_days=20, reference_horizon_days=5)
+    result = estimate_return_for_days(score=0.75, return_calibration=calibration, n_days=20, reference_horizon_days=5)
     assert result == pytest.approx(0.06 * (20 / 5))
 
 

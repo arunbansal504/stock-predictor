@@ -31,7 +31,7 @@ import pandas as pd
 from stockpredictor.common.types import RiskProfile
 from stockpredictor.portfolio.hrp import compute_hrp_weights, compute_returns_matrix
 from stockpredictor.portfolio.risk_profiles import get_risk_profile_params
-from stockpredictor.portfolio.sizing import apply_confidence_tilt, apply_position_cap, apply_sector_caps
+from stockpredictor.portfolio.sizing import apply_confidence_tilt, apply_position_and_sector_caps
 from stockpredictor.portfolio.targets import compute_stock_targets
 
 TRADING_DAYS_PER_YEAR = 252
@@ -146,8 +146,9 @@ def construct_portfolio(
     tilted = apply_confidence_tilt(hrp_weights, scores, params.confidence_tilt_strength)
 
     sectors = sector_by_symbol.reindex(usable_symbols).fillna("Unknown")
-    sector_capped = apply_sector_caps(tilted, sectors, params.max_sector_weight)
-    final_weights = apply_position_cap(sector_capped, params.max_position_weight)
+    final_weights = apply_position_and_sector_caps(
+        tilted, sectors, params.max_position_weight, params.max_sector_weight
+    )
 
     # Last *valid* price per symbol, not just the chronologically last row --
     # observed live: a free-data-source gap can leave a row present for the
@@ -235,11 +236,22 @@ def construct_portfolio(
     else:
         expected_sharpe = None
 
-    # Not a forecast -- amount * (1 + historically-calibrated expected_return),
-    # see DISCLAIMER and calibration_curve.py's docstring.
+    # Not a forecast -- see DISCLAIMER and calibration_curve.py's docstring.
+    # `expected_return` above is the weighted-average return of the
+    # *invested* capital only (return_components normalizes by total_w, the
+    # sum of allocated weights, not by 1.0) -- applying it to the full
+    # `investment_amount` would silently assume capital caps couldn't
+    # allocate (total_allocated_weight < 1, see the shortfall_note above)
+    # still grows at the invested rate, e.g. observed live: 35% allocated,
+    # 14.69% expected return on that 35%, but the naive
+    # `investment_amount * (1 + expected_return)` credited the *entire*
+    # amount with 14.69% growth. The uninvested remainder is conservatively
+    # assumed flat (no separate cash-yield model exists), so only the
+    # actually-allocated fraction of `investment_amount` grows.
     if investment_amount is not None and expected_return is not None:
-        expected_final_value = investment_amount * (1 + expected_return)
-        expected_return_amount = expected_final_value - investment_amount
+        invested_amount = investment_amount * total_allocated_weight
+        expected_return_amount = invested_amount * expected_return
+        expected_final_value = investment_amount + expected_return_amount
     else:
         expected_final_value = None
         expected_return_amount = None

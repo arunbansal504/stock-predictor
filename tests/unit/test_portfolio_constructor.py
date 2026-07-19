@@ -175,7 +175,13 @@ def test_construct_portfolio_investment_amount_populates_rupee_fields():
         ranked, prices, atr, sectors, calib, RiskProfile.BALANCED, "5d", top_n=6, investment_amount=100_000.0
     )
     assert pf.expected_return is not None
-    assert pf.expected_final_value == pytest.approx(100_000.0 * (1 + pf.expected_return))
+    # expected_final_value must scale by total_allocated_weight, not treat
+    # the full investment_amount as invested -- see
+    # test_construct_portfolio_expected_final_value_scales_by_allocated_weight
+    # for the regression case where these two differ (this fixture happens
+    # to fully allocate, so the two formulas coincide here).
+    invested = 100_000.0 * pf.total_allocated_weight
+    assert pf.expected_final_value == pytest.approx(100_000.0 + invested * pf.expected_return)
     assert pf.expected_return_amount == pytest.approx(pf.expected_final_value - 100_000.0)
     for p in pf.positions:
         assert p.allocated_amount == pytest.approx(p.weight * 100_000.0)
@@ -183,6 +189,45 @@ def test_construct_portfolio_investment_amount_populates_rupee_fields():
             assert p.expected_return_amount == pytest.approx(p.allocated_amount * p.expected_return)
         else:
             assert p.expected_return_amount is None
+
+
+def test_construct_portfolio_expected_final_value_scales_by_allocated_weight():
+    """Regression test for a real bug: with only a fraction of capital
+    actually allocated (sector/position caps too tight for the requested
+    top_n), expected_final_value was computed as
+    investment_amount * (1 + expected_return) -- crediting the ENTIRE
+    investment with the invested portion's return rate, as if the
+    unallocated remainder also grew at that rate. Observed live: 35%
+    allocated, 14.69% expected return on that 35%, but the final value
+    implied the full 100% grew at 14.69%. Uses only 5 names (below
+    BALANCED's min_positions=6) with 5 sectors sharing 2 groups so both the
+    diversification warning and a real capital shortfall trigger."""
+    symbols = [f"S{i}" for i in range(5)]
+    ranked, prices, atr, sectors, calib = _synthetic_scenario(symbols)
+    # Force a genuine sub-100% allocation: 5 symbols in 2 sectors under
+    # BALANCED's max_sector_weight=0.35 caps total well below 1.0
+    # (2 sectors * 0.35 = 0.70 ceiling), same mechanism as the live bug.
+    pf = construct_portfolio(
+        ranked, prices, atr, sectors, calib, RiskProfile.BALANCED, "5d", top_n=5, investment_amount=50_000.0
+    )
+    assert pf.total_allocated_weight < 0.999, "fixture sanity check: must not fully allocate"
+    assert pf.expected_return is not None
+
+    invested_amount = 50_000.0 * pf.total_allocated_weight
+    expected_correct_final_value = 50_000.0 + invested_amount * pf.expected_return
+    assert pf.expected_final_value == pytest.approx(expected_correct_final_value)
+
+    # The old (buggy) formula applied expected_return to the full amount --
+    # explicitly assert the result does NOT match that, so a regression
+    # back to the bug fails loudly rather than just "close enough."
+    buggy_final_value = 50_000.0 * (1 + pf.expected_return)
+    assert pf.expected_final_value != pytest.approx(buggy_final_value)
+
+    # Per-position dollar amounts were always correct (they use
+    # investment_amount * weight, and weight already only sums to
+    # total_allocated_weight) -- confirms the bug was isolated to the
+    # portfolio-level aggregate, not the per-position figures.
+    assert sum(p.allocated_amount for p in pf.positions) == pytest.approx(invested_amount)
 
 
 def test_construct_portfolio_investment_amount_with_no_calibration_data_stays_none():
