@@ -22,14 +22,20 @@ import pandas as pd
 import streamlit as st
 
 from stockpredictor.backtest.engine import METRIC_NAMES
-from stockpredictor.backtest.registry import read_latest_backtest_result, read_latest_ic_series
+from stockpredictor.backtest.registry import (
+    read_latest_backtest_result,
+    read_latest_ic_series,
+    read_latest_return_calibration,
+)
 from stockpredictor.backtest.significance import run_significance_report
 from stockpredictor.common.types import DataLayer, RiskProfile
 from stockpredictor.explain.registry import read_explanations
 from stockpredictor.features.sentiment import latest_sentiment_snapshot
 from stockpredictor.models.calibration import SEPARATION_ALPHA, IsotonicCalibrator
 from stockpredictor.monitoring.accuracy import compute_accuracy
+from stockpredictor.portfolio.constructor import parse_horizon_days
 from stockpredictor.portfolio.service import DEFAULT_STRATEGY_ID, construct_portfolio_from_lake
+from stockpredictor.portfolio.targets import estimate_return_for_days, extrapolation_warning
 from stockpredictor.ranking.registry import read_latest_rankings
 from stockpredictor.storage.db import make_engine, make_sessionmaker
 from stockpredictor.storage.lake import Lake
@@ -73,6 +79,7 @@ with st.sidebar:
     risk_profile = st.selectbox(
         "Risk profile", RISK_PROFILES, index=1, format_func=lambda p: p.value.capitalize()
     )
+    investment_amount = st.number_input("Investment amount (₹)", min_value=0.0, value=0.0)
 
 tab_picks, tab_detail, tab_portfolio, tab_backtest, tab_transparency = st.tabs(
     ["Top Picks", "Stock Detail", "Portfolio Constructor", "Backtest Lab", "Model Transparency"]
@@ -233,6 +240,44 @@ with tab_detail:
                 "probability. See Top Picks tab for why this exists."
             )
 
+        with st.expander("What if calculator (custom horizon)"):
+            whatif_amount = st.number_input("Amount to invest (₹)", min_value=0.0, value=10000.0, key="whatif_amount")
+            whatif_days = st.number_input("Days", min_value=1, value=30, step=1, key="whatif_days")
+            reference_horizon_days = parse_horizon_days(horizon)
+            return_calibration = read_latest_return_calibration(lake, strategy_id, horizon)
+            expected_return_pct = (
+                estimate_return_for_days(float(row["score"]), return_calibration, int(whatif_days), reference_horizon_days)
+                if reference_horizon_days is not None
+                else None
+            )
+            if expected_return_pct is None:
+                st.info("No return calibration available yet for this strategy/horizon.")
+            else:
+                warning = (
+                    extrapolation_warning(int(whatif_days), reference_horizon_days)
+                    if reference_horizon_days is not None
+                    else None
+                )
+                if warning is not None:
+                    st.warning(warning)
+                expected_return_amount = whatif_amount * expected_return_pct
+                expected_final_value = whatif_amount + expected_return_amount
+                wc1, wc2 = st.columns(2)
+                wc1.metric("Expected return", f"{expected_return_pct:.2%}")
+                wc2.metric(
+                    "Expected final value (₹)",
+                    f"₹{expected_final_value:,.0f}",
+                    delta=f"₹{expected_return_amount:,.0f}",
+                )
+                st.caption(
+                    f"Not a forecast -- a linear-in-time extrapolation of this strategy's own "
+                    f"historical score-decile calibration (from the nearest published horizon, "
+                    f"{horizon}) to {int(whatif_days)} day(s), not a dedicated calibration for "
+                    "that exact day count -- the further from a published horizon, the less "
+                    "this reflects any actual evidence. Derived from historical calibration, "
+                    "same as the Portfolio Constructor tab's expected return."
+                )
+
         explanations = read_explanations(lake, horizon)
         exp_row = explanations[explanations["symbol"] == symbol] if not explanations.empty else explanations
         if exp_row.empty:
@@ -273,7 +318,8 @@ with tab_detail:
 with tab_portfolio:
     st.subheader(f"Portfolio Constructor -- Top {top_n}, {horizon}, {risk_profile.value} risk")
     portfolio = construct_portfolio_from_lake(
-        lake, sessionmaker_, horizon, risk_profile, int(top_n), strategy_id
+        lake, sessionmaker_, horizon, risk_profile, int(top_n), strategy_id,
+        investment_amount=investment_amount if investment_amount > 0 else None,
     )
     if portfolio is None:
         st.info("No rankings yet for this horizon -- see the Top Picks tab.")
@@ -292,11 +338,20 @@ with tab_portfolio:
         c3.metric("Expected Sharpe", f"{portfolio.expected_sharpe:.2f}" if portfolio.expected_sharpe is not None else "N/A")
         c4.metric("Capital allocated", f"{portfolio.total_allocated_weight:.0%}")
 
+        if portfolio.expected_final_value is not None:
+            st.metric(
+                "Expected final value (₹)",
+                f"₹{portfolio.expected_final_value:,.0f}",
+                delta=f"₹{portfolio.expected_return_amount:,.0f}" if portfolio.expected_return_amount is not None else None,
+            )
+
+        show_amounts = investment_amount > 0
         positions_df = pd.DataFrame(
             [
                 {
                     "symbol": p.symbol,
                     "weight": p.weight,
+                    **({"allocated_amount": p.allocated_amount, "expected_return_amount": p.expected_return_amount} if show_amounts else {}),
                     "sector": p.sector,
                     "score": p.score,
                     "entry": p.entry_price,
@@ -307,6 +362,13 @@ with tab_portfolio:
                 for p in portfolio.positions
             ]
         ).sort_values("weight", ascending=False)
+        if show_amounts:
+            positions_df["allocated_amount"] = positions_df["allocated_amount"].map(
+                lambda v: f"₹{v:,.0f}" if v is not None else "N/A"
+            )
+            positions_df["expected_return_amount"] = positions_df["expected_return_amount"].map(
+                lambda v: f"₹{v:,.0f}" if v is not None else "N/A"
+            )
         st.dataframe(positions_df.set_index("symbol"), use_container_width=True)
         st.bar_chart(positions_df.set_index("symbol")["weight"])
 

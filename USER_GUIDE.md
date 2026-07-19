@@ -47,6 +47,7 @@ qualified financial advisor.
 | **Factor block** | Individual signals are grouped into readable categories: **Momentum/Trend** (is the stock trending up, relative to its recent history?), **Oscillators** (is it "overbought" or "oversold" short-term?), **Volatility/Risk** (how much does the price swing around?), **Volume/Liquidity** (how much is actually being traded?), **Fundamental/Quality** (valuation and profitability from the company's financial statements — P/E, P/B, ROE, ROA, debt levels, margins), and (shown separately, not yet part of the score) **News/Sentiment**. |
 | **Top positive / negative signals** | The specific individual features that most helped or hurt this stock's score, e.g. `+ rsi_14 (Oscillators): +0.021` means the 14-day RSI oscillator reading pushed the score up by 0.021. |
 | **News & sentiment panel** | Recent headlines about the company (via Google News), each scored by a finance-tuned AI model (FinBERT) as positive, negative, or neutral, with a numeric score from -1 (very negative) to +1 (very positive). This is shown as live context, but — important — **it does not yet feed into the score above**. See the note on that tab for why (short version: there isn't enough historical news data yet to prove it actually helps, so it isn't used until that's tested honestly). |
+| **What if calculator** | A Stock Detail tab tool: type any ₹ amount and any number of days, and it estimates a return for that exact custom horizon. Under the hood there's no new model or forecast for that day count — the published calibration curves only cover 5d/30d/90d, so this stretches (or shrinks) the nearest one of those *linearly* with the day count (e.g. double the days, double the return) — the standard assumption for how expected return itself scales with time. It's a reasonable approximation, not a dedicated calibration for your specific day count — the further your chosen number of days is from 5/30/90, the less this reflects any actual historical evidence. If your day count is more than 10x away from the selected horizon in either direction (e.g. a day count of 5000 stretching a 5-day curve to ~20 years), a yellow warning banner appears — at that distance the number is essentially a guess, not even an approximation. |
 
 ### Sector, fundamentals & valuation terms
 
@@ -79,6 +80,10 @@ qualified financial advisor.
 | **Expected Sharpe** | Expected return divided by expected volatility (risk-adjusted, both put on the same annualized time basis). Higher is generally better — it means more return per unit of risk taken. A Sharpe around 1 is considered decent, above 2 is very good, but treat this as a rough historical estimate, not a promise of the future. |
 | **Diversification warning** | Shown when the selected number of stocks or the risk profile's caps don't allow for a well-spread portfolio (e.g., too few candidates for how diversified the risk profile expects you to be). |
 | **Capital allocated** | What percentage of the (hypothetical) total money actually got assigned to a position. Sometimes this is less than 100% — see the diversification warning if so; it means the position/sector caps mathematically couldn't fit more into fewer names. |
+| **Investment amount (₹)** | An optional rupee amount you type in the sidebar so the app can translate weights into actual ₹ figures alongside the percentages. Leave it at 0 to see weights/percentages only — nothing about the underlying calculation changes either way, this just multiplies through. |
+| **Allocated amount (₹)** | Investment amount × that stock's weight — how many rupees of your typed-in amount this position represents. Only shown once you enter an investment amount above 0. |
+| **Expected return amount (₹)** | Allocated amount (or, at the portfolio level, the whole investment amount) × expected return. Same caveat as **Expected return** above — a historically-derived rupee figure, not a forecast of what will actually happen to your money. |
+| **Expected final value (₹)** | Investment amount × (1 + the portfolio's expected return) — what your total money is estimated to become if history repeats itself over this horizon. Still just a historical average dressed in rupees, not a promise. |
 
 ### The Backtest Lab screen
 
@@ -120,6 +125,7 @@ Streamlit Cloud URL) and use the sidebar to set:
 - **Top N** — how many stocks to show/consider
 - **Backtest strategy id** — leave as default unless you know you want a different one
 - **Risk profile** — Conservative / Balanced / Aggressive
+- **Investment amount (₹)** — optional; leave at 0 for percentages only, or enter an amount to see ₹ figures on the Portfolio Constructor tab too
 
 Then the five tabs:
 
@@ -128,15 +134,21 @@ price, score, and disagreement, plus a bar chart. Start here to see what's
 currently ranked highest.
 
 **Stock Detail** — pick any symbol to see its rank/score/disagreement, the
-SHAP factor breakdown (why the model scored it this way), and recent
-news/sentiment. Use this to sanity-check *why* a stock is ranked where it
-is, not just trust the number blindly.
+SHAP factor breakdown (why the model scored it this way), recent
+news/sentiment, and a "What if calculator" expander where you can type a
+₹ amount and any number of days to get an approximate expected return for
+that custom horizon (see the glossary entry above for how it extrapolates).
+Use this tab to sanity-check *why* a stock is ranked where it is, not just
+trust the number blindly.
 
 **Portfolio Constructor** — turns your Top N into an illustrative
 allocation: weights, entry/stop/target per stock, and portfolio-level
-expected return/volatility/Sharpe. This is the "if I were to build a
-portfolio from this list, here's one disciplined way to size and risk-manage
-it" screen — again, illustrative, not an instruction.
+expected return/volatility/Sharpe. If you set an **investment amount (₹)**
+in the sidebar, it also shows ₹ figures alongside the percentages —
+allocated amount per stock, expected return in ₹, and an expected final
+value for the whole portfolio. This is the "if I were to build a portfolio
+from this list, here's one disciplined way to size and risk-manage it"
+screen — again, illustrative, not an instruction.
 
 **Backtest Lab** — the honesty check: how would this exact strategy have
 performed historically, compared to just holding the index? Look at this

@@ -15,12 +15,14 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session, sessionmaker
 
 from stockpredictor.api.dependencies import get_db_sessionmaker, get_lake
-from stockpredictor.backtest.registry import read_latest_backtest_result
+from stockpredictor.backtest.registry import read_latest_backtest_result, read_latest_return_calibration
 from stockpredictor.common.types import RiskProfile
 from stockpredictor.explain.registry import read_explanations
 from stockpredictor.monitoring.accuracy import compute_accuracy
 from stockpredictor.monitoring.run_status import get_latest_run_summary, get_recent_runs
+from stockpredictor.portfolio.constructor import parse_horizon_days
 from stockpredictor.portfolio.service import DEFAULT_STRATEGY_ID, construct_portfolio_from_lake
+from stockpredictor.portfolio.targets import estimate_return_for_days, extrapolation_warning
 from stockpredictor.ranking.registry import read_latest_rankings
 from stockpredictor.storage.lake import Lake
 
@@ -46,6 +48,14 @@ class PortfolioConstructRequest(BaseModel):
     risk_profile: RiskProfile = RiskProfile.BALANCED
     strategy_id: str = DEFAULT_STRATEGY_ID
     lookback_days: int = 90
+    investment_amount: float | None = None  # Rs.; None skips all derived ₹ fields
+
+
+class WhatIfRequest(BaseModel):
+    horizon: str = "5d"
+    n_days: int = 30
+    investment_amount: float  # Rs.
+    strategy_id: str = DEFAULT_STRATEGY_ID
 
 
 @app.get("/health")
@@ -132,11 +142,61 @@ def post_portfolio_construct(
     rankings, safe to compute on demand (see portfolio/constructor.py)."""
     portfolio = construct_portfolio_from_lake(
         lake, sessionmaker_, request.horizon, request.risk_profile, request.top_n,
-        request.strategy_id, request.lookback_days,
+        request.strategy_id, request.lookback_days, request.investment_amount,
     )
     if portfolio is None:
         raise HTTPException(status_code=404, detail=f"No rankings available for horizon={request.horizon}")
     return _envelope(dataclasses.asdict(portfolio))
+
+
+@app.post("/stocks/{symbol}/whatif")
+def post_stock_whatif(
+    symbol: str,
+    request: WhatIfRequest,
+    lake: Lake = Depends(get_lake),
+) -> dict:
+    """"What if I invest ₹X in `symbol` for `n_days`" -- extrapolates this
+    strategy's own calibrated expected return (see
+    portfolio/targets.py's estimate_return_for_days) from the nearest
+    published horizon's calibration curve via linear time-scaling. Not a
+    dedicated forecast for `n_days` -- see targets.py's docstring."""
+    if request.n_days <= 0:
+        raise HTTPException(status_code=400, detail="n_days must be positive")
+
+    ranked = read_latest_rankings(lake, request.horizon)
+    if ranked.empty:
+        raise HTTPException(status_code=404, detail=f"No rankings available for horizon={request.horizon}")
+    row = ranked[ranked["symbol"] == symbol]
+    if row.empty:
+        raise HTTPException(status_code=404, detail=f"No ranking for symbol={symbol}, horizon={request.horizon}")
+    score = float(row.iloc[0]["score"])
+
+    reference_horizon_days = parse_horizon_days(request.horizon)
+    if reference_horizon_days is None:
+        raise HTTPException(status_code=400, detail=f"Unrecognized horizon format: {request.horizon}")
+
+    return_calibration = read_latest_return_calibration(lake, request.strategy_id, request.horizon)
+    expected_return_pct = estimate_return_for_days(score, return_calibration, request.n_days, reference_horizon_days)
+    if expected_return_pct is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No return calibration available for strategy_id={request.strategy_id}, horizon={request.horizon}",
+        )
+
+    expected_return_amount = request.investment_amount * expected_return_pct
+    expected_final_value = request.investment_amount + expected_return_amount
+
+    return _envelope(
+        {
+            "symbol": symbol,
+            "expected_return_pct": expected_return_pct,
+            "expected_return_amount": expected_return_amount,
+            "expected_final_value": expected_final_value,
+            "n_days": request.n_days,
+            "reference_horizon": request.horizon,
+            "extrapolation_warning": extrapolation_warning(request.n_days, reference_horizon_days),
+        }
+    )
 
 
 @app.get("/monitoring/runs")

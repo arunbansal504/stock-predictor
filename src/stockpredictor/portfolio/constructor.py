@@ -42,7 +42,7 @@ DISCLAIMER = (
 )
 
 
-def _parse_horizon_days(horizon: str) -> int | None:
+def parse_horizon_days(horizon: str) -> int | None:
     """Parse the "Nd" trading-day-count convention used throughout this
     codebase (see common/types.py's Horizon enum: "5d", "30d", "90d", ...).
     Returns None (rather than raising) for an unrecognized format -- a
@@ -62,6 +62,12 @@ class PortfolioPosition:
     stop_loss: float
     target_price: float
     expected_return: float | None
+    # Rs. amounts, only populated when `construct_portfolio` is given an
+    # `investment_amount` -- not a forecast, just that amount split by
+    # `weight` (allocated_amount) and multiplied by the same
+    # historically-derived `expected_return` used above (expected_return_amount).
+    allocated_amount: float | None = None
+    expected_return_amount: float | None = None
 
 
 @dataclass(frozen=True)
@@ -76,6 +82,11 @@ class ConstructedPortfolio:
     total_allocated_weight: float
     excluded_symbols: list[str] = field(default_factory=list)
     disclaimer: str = DISCLAIMER
+    # Rs. amounts derived from `investment_amount` and the portfolio-level
+    # `expected_return` above -- not a forecast, see DISCLAIMER. None unless
+    # `construct_portfolio` was given an `investment_amount`.
+    expected_final_value: float | None = None
+    expected_return_amount: float | None = None
 
 
 def construct_portfolio(
@@ -88,6 +99,7 @@ def construct_portfolio(
     horizon: str,
     top_n: int,
     lookback_days: int = 90,
+    investment_amount: float | None = None,
 ) -> ConstructedPortfolio:
     """
     ranked: must have columns [symbol, rank, score], one row per candidate.
@@ -95,6 +107,10 @@ def construct_portfolio(
         covering at least `lookback_days` of history for the candidates.
     atr_by_symbol / sector_by_symbol: latest ATR-14 and sector, indexed by symbol.
     return_calibration: from backtest/calibration_curve.py, see targets.py.
+    investment_amount: Rs. to allocate, if the caller wants Rs. amounts
+        (allocated_amount/expected_return_amount/expected_final_value)
+        alongside the existing weights/percentages. None (default) skips
+        all of that -- zero behavior change for callers that only want weights.
     """
     params = get_risk_profile_params(risk_profile)
     candidates = ranked.sort_values("rank").head(top_n)
@@ -149,16 +165,25 @@ def construct_portfolio(
         targets = compute_stock_targets(
             entry_price, atr, score, params.stop_loss_atr_multiplier, params.target_reward_risk_ratio, return_calibration
         )
+        weight = float(final_weights.get(symbol, 0.0))
+        allocated_amount = investment_amount * weight if investment_amount is not None else None
+        expected_return_amount = (
+            allocated_amount * targets.expected_return
+            if allocated_amount is not None and targets.expected_return is not None
+            else None
+        )
         positions.append(
             PortfolioPosition(
                 symbol=symbol,
-                weight=float(final_weights.get(symbol, 0.0)),
+                weight=weight,
                 score=score,
                 sector=sector_by_symbol.get(symbol),
                 entry_price=entry_price,
                 stop_loss=targets.stop_loss,
                 target_price=targets.target_price,
                 expected_return=targets.expected_return,
+                allocated_amount=allocated_amount,
+                expected_return_amount=expected_return_amount,
             )
         )
 
@@ -203,12 +228,21 @@ def construct_portfolio(
     # sharpe_ratio: per-period mean/std, then scaled by sqrt(periods/year))
     # is sqrt-of-time scaling applied consistently to both the return and
     # the volatility side of the ratio, not compounding on one side only.
-    horizon_days = _parse_horizon_days(horizon)
+    horizon_days = parse_horizon_days(horizon)
     if expected_return is not None and horizon_days and daily_vol > 0:
         period_vol = daily_vol * np.sqrt(horizon_days)  # volatility over the same period as expected_return
         expected_sharpe = (expected_return / period_vol) * np.sqrt(TRADING_DAYS_PER_YEAR / horizon_days)
     else:
         expected_sharpe = None
+
+    # Not a forecast -- amount * (1 + historically-calibrated expected_return),
+    # see DISCLAIMER and calibration_curve.py's docstring.
+    if investment_amount is not None and expected_return is not None:
+        expected_final_value = investment_amount * (1 + expected_return)
+        expected_return_amount = expected_final_value - investment_amount
+    else:
+        expected_final_value = None
+        expected_return_amount = None
 
     return ConstructedPortfolio(
         risk_profile=risk_profile.value,
@@ -220,4 +254,6 @@ def construct_portfolio(
         diversification_warning=diversification_warning,
         total_allocated_weight=total_allocated_weight,
         excluded_symbols=excluded_symbols,
+        expected_final_value=expected_final_value,
+        expected_return_amount=expected_return_amount,
     )

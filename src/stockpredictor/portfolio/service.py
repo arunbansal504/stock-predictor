@@ -70,6 +70,7 @@ def construct_portfolio_from_lake(
     top_n: int,
     strategy_id: str = DEFAULT_STRATEGY_ID,
     lookback_days: int = 90,
+    investment_amount: float | None = None,
 ) -> ConstructedPortfolio | None:
     """Returns None if there are no published rankings for `horizon` yet --
     callers decide how to present that (404 in the API, an info message in
@@ -103,4 +104,5 @@ def construct_portfolio_from_lake(
         horizon=horizon,
         top_n=top_n,
         lookback_days=lookback_days,
+        investment_amount=investment_amount,
     )

@@ -134,6 +134,27 @@ LLM, or Telegram alerts (see comments in that file).
   probability). Not model inference — a deterministic optimization over
   already-published rankings, safe to compute on demand
   (`POST /portfolio/construct`, Streamlit's "Portfolio Constructor" tab).
+  An optional `investment_amount` (₹) threads through to ₹-denominated
+  `allocated_amount`/`expected_return_amount`/`expected_final_value` fields
+  alongside the existing weights/percentages — pure multiplication of the
+  same numbers above, None/skipped when no amount is given so existing
+  callers are unaffected. A separate `POST /stocks/{symbol}/whatif`
+  endpoint (and a "What if calculator" expander on the Stock Detail tab)
+  answers "invest ₹X for N days" for an arbitrary day count that doesn't
+  have its own published calibration curve, by scaling the nearest
+  published horizon's (5d/30d/90d) calibrated return *linearly* with
+  time — deliberately not the sqrt-of-time convention `expected_sharpe`
+  uses, since that scales a return/volatility *ratio*, whereas expected
+  return itself scales linearly under the same random-walk assumption
+  (sqrt-of-time on the raw return would silently understate long-horizon
+  extrapolations) — rather than inventing a new return model
+  (`portfolio/targets.py`'s `estimate_return_for_days`). A day count more
+  than `MAX_REASONABLE_EXTRAPOLATION_MULTIPLE` (10x) away from the selected
+  horizon, in either direction, surfaces an explicit
+  `extrapolation_warning` in the API response (and a yellow warning banner
+  in the UI) — correct scaling math doesn't make a 5-day curve stretched
+  to 5000 days meaningful, so that's flagged rather than presented at face
+  value (`portfolio/targets.py`'s `extrapolation_warning`).
 - **Orchestration** (`orchestration/nightly_flow.py`): a Prefect flow
   wiring ingestion → features → labels → predict/rank/explain, with
   data-quality gates, an audit trail in `run_metadata`, and freshness/drift
