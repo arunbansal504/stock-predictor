@@ -37,7 +37,8 @@ from stockpredictor.portfolio.constructor import parse_horizon_days
 from stockpredictor.portfolio.service import DEFAULT_STRATEGY_ID, construct_portfolio_from_lake
 from stockpredictor.portfolio.targets import estimate_return_for_days, extrapolation_warning
 from stockpredictor.ranking.registry import read_latest_rankings
-from stockpredictor.storage.db import make_engine, make_sessionmaker
+from stockpredictor.reporting.analytics import compute_performance_analytics
+from stockpredictor.storage.db import init_db, make_engine, make_sessionmaker
 from stockpredictor.storage.lake import Lake
 
 DISCLAIMER = (
@@ -55,7 +56,17 @@ def get_lake() -> Lake:
 
 @st.cache_resource
 def get_sessionmaker():
-    return make_sessionmaker(make_engine())
+    # init_db is idempotent (CREATE TABLE IF NOT EXISTS, effectively -- see
+    # storage/db.py) and every other entrypoint in this codebase
+    # (orchestration/nightly_flow.py, the reporting/ scripts) already calls
+    # it before touching the DB. The app previously didn't, which worked by
+    # accident as long as app.db happened to predate a schema addition --
+    # it broke the moment the Track Record tab queried the new
+    # published_predictions/validation_results tables on a DB that hadn't
+    # run any of the new scripts yet.
+    engine = make_engine()
+    init_db(engine)
+    return make_sessionmaker(engine)
 
 
 st.set_page_config(page_title="Stock Predictor (Research)", layout="wide")
@@ -81,8 +92,8 @@ with st.sidebar:
     )
     investment_amount = st.number_input("Investment amount (₹)", min_value=0.0, value=0.0)
 
-tab_picks, tab_detail, tab_portfolio, tab_backtest, tab_transparency = st.tabs(
-    ["Top Picks", "Stock Detail", "Portfolio Constructor", "Backtest Lab", "Model Transparency"]
+tab_picks, tab_detail, tab_portfolio, tab_backtest, tab_transparency, tab_track_record = st.tabs(
+    ["Top Picks", "Stock Detail", "Portfolio Constructor", "Backtest Lab", "Model Transparency", "Track Record"]
 )
 
 with tab_picks:
@@ -490,4 +501,69 @@ with tab_transparency:
         st.caption(
             "If every decile looks equally good, that's a leakage red flag, not a win (§30) -- "
             "a real, if modest, edge should show up as a rising staircase from decile 0 to 9."
+        )
+
+with tab_track_record:
+    st.subheader("Track Record -- published predictions vs. actual outcomes")
+    st.caption(
+        "This tab is horizon-independent (every published prediction, not just the sidebar's "
+        "selected horizon) and reads the same `published_predictions`/`validation_results` "
+        "tables as `reports/dashboard/index.html` and the monthly ML Review -- all three "
+        "surfaces share reporting/analytics.py's compute_performance_analytics so they can't "
+        "silently disagree. Unlike Top Picks (which re-ranks every night), a *published* "
+        "prediction is the official weekly Top-10 snapshot, frozen and never edited after the "
+        "fact -- see USER_GUIDE.md's \"weekly track record\" glossary section for what that means."
+    )
+    analytics = compute_performance_analytics(lake, sessionmaker_)
+    if analytics["n_resolved"] == 0:
+        st.info(
+            f"{analytics['n_published']} prediction(s) published so far, none resolved yet -- "
+            "a 90-day pick published this week won't resolve for about three months. Check back "
+            "once the first horizon completes."
+        )
+    else:
+        st.caption(f"{analytics['n_published']} published, {analytics['n_resolved']} resolved.")
+        c1, c2, c3, c4, c5 = st.columns(5)
+        c1.metric("Overall accuracy", f"{analytics['overall_accuracy']:.1%}")
+        c2.metric("Top-5 accuracy", f"{analytics['top_5_accuracy']:.1%}" if analytics["top_5_accuracy"] is not None else "N/A")
+        c3.metric("Top-10 accuracy", f"{analytics['top_10_accuracy']:.1%}" if analytics["top_10_accuracy"] is not None else "N/A")
+        c4.metric("Avg alpha (vs. NIFTY 500)", f"{analytics['avg_alpha']:+.2%}")
+        c5.metric("Win rate", f"{analytics['win_rate']:.1%}")
+
+        r6, r12 = analytics.get("rolling_6m"), analytics.get("rolling_12m")
+        rc1, rc2 = st.columns(2)
+        rc1.metric(
+            "Rolling 6-month hit rate",
+            f"{r6['hit_rate']:.1%} (n={r6['n']})" if r6 else "N/A",
+        )
+        rc2.metric(
+            "Rolling 12-month hit rate",
+            f"{r12['hit_rate']:.1%} (n={r12['n']})" if r12 else "N/A",
+        )
+
+        if analytics["by_horizon_ratios"]:
+            st.markdown("**Risk-adjusted return by horizon** (resolved predictions only)")
+            ratios_df = pd.DataFrame(analytics["by_horizon_ratios"]).T
+            st.dataframe(ratios_df, use_container_width=True)
+
+        if analytics["monthly_stats"]:
+            # Plain st.bar_chart is one flat series color (same as every
+            # other chart in this app) -- it can't conditionally color bars
+            # by sign the way reports/dashboard/index.html's custom SVG
+            # chart does, so this doesn't claim a green/red distinction it
+            # can't render. The table right below carries the exact sign.
+            st.markdown("**Monthly avg alpha** (positive = beat benchmark that month)")
+            monthly_df = pd.DataFrame(analytics["monthly_stats"]).T
+            st.bar_chart(monthly_df["avg_alpha"])
+            st.dataframe(monthly_df, use_container_width=True)
+
+        if analytics["probability_distribution"]:
+            st.markdown("**Published prediction-probability distribution**")
+            st.bar_chart(pd.Series(analytics["probability_distribution"]))
+
+        st.caption(
+            "n_periods here can still be small -- treat Sharpe/Sortino/CAGR with the same "
+            "sample-size caution as the Backtest Lab tab (§ that tab's own n_periods caveat). "
+            "The full monthly write-up, with sector/feature-level detail, is in "
+            "`reports/YYYY-MM-ML-Review.md`, generated automatically on the 1st of each month."
         )

@@ -1,0 +1,63 @@
+name: Daily prediction validation
+
+# 15:00 UTC daily -- after nightly.yml's typical run window. Shares
+# nightly's concurrency group, so an overlap just queues rather than races.
+on:
+  schedule:
+    - cron: "0 15 * * *"
+  workflow_dispatch: {}
+
+# Resolves any published prediction whose horizon has completed, stores
+# actual outcomes + risk metrics (reporting/validation.py), and regenerates
+# the static performance dashboard (reporting/dashboard.py). Reuses the
+# Gold `labels` domain that's already committed by nightly -- no
+# re-ingestion, no retraining.
+permissions:
+  contents: write
+
+concurrency:
+  group: nightly-pipeline
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+          cache-dependency-path: pyproject.toml
+
+      - name: Install dependencies
+        run: pip install -e .
+
+      - name: Validate resolved predictions and regenerate dashboard
+        run: python scripts/run_daily_validation.py
+
+      - name: Commit and push validation results + dashboard
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add data/app.db reports/dashboard/
+          git diff --staged --quiet && echo "No validation changes to commit" && exit 0
+          git commit -m "Daily prediction validation $(date -u +%Y-%m-%dT%H:%M:%SZ) [skip ci]"
+
+          # Same merge-not-rebase, keep-ours-on-conflict policy as
+          # nightly.yml -- see that file's comment for why.
+          git fetch origin main
+          if ! git merge origin/main --no-edit -m "Merge origin/main into daily validation commit"; then
+            git diff --name-only --diff-filter=U | while IFS= read -r f; do
+              if git cat-file -e "HEAD:$f" 2>/dev/null; then
+                git checkout --ours -- "$f"
+                git add "$f"
+              else
+                git rm -f -q "$f"
+              fi
+            done
+            git commit --no-edit
+          fi
+          git push origin main

@@ -9,7 +9,9 @@ from stockpredictor.backtest.metrics import (
     calmar_ratio,
     hit_rate_by_decile,
     information_coefficient,
+    information_ratio,
     max_drawdown,
+    max_gain,
     sharpe_ratio,
     sortino_ratio,
     win_rate,
@@ -67,6 +69,43 @@ def test_max_drawdown_known_scenario():
 
 def test_max_drawdown_empty_is_nan():
     assert np.isnan(max_drawdown(pd.Series(dtype="float64")))
+
+
+def test_max_gain_known_scenario():
+    returns = pd.Series([-0.10, 0.30, -0.05])
+    # equity: 0.90, 1.17, 1.1115 ; running min: 0.90, 0.90, 0.90
+    # run-ups: 0, 0.30, 0.235 -> max = 0.30
+    assert max_gain(returns) == pytest.approx(0.30, rel=1e-6)
+
+
+def test_max_gain_empty_is_nan():
+    assert np.isnan(max_gain(pd.Series(dtype="float64")))
+
+
+def test_max_gain_mirrors_max_drawdown_on_negated_returns():
+    # Running the max_drawdown scenario in reverse polarity should produce
+    # the same magnitude via max_gain -- confirms the trough-to-peak
+    # construction is a true mirror, not an independent (and possibly buggy)
+    # re-derivation.
+    returns = pd.Series([0.10, -0.20, 0.05])
+    negated = -returns
+    assert max_gain(negated) == pytest.approx(abs(max_drawdown(returns)), rel=1e-6)
+
+
+def test_information_ratio_matches_sharpe_of_active_return():
+    returns = pd.Series([0.02, 0.01, 0.03, -0.01, 0.02])
+    benchmark = pd.Series([0.01, 0.01, 0.01, 0.01, 0.01])
+    horizon_days = 21
+    active = returns - benchmark
+    assert information_ratio(returns, benchmark, horizon_days) == pytest.approx(
+        sharpe_ratio(active, horizon_days)
+    )
+
+
+def test_information_ratio_nan_when_no_active_variance():
+    returns = pd.Series([0.01, 0.01, 0.01])
+    benchmark = pd.Series([0.01, 0.01, 0.01])
+    assert np.isnan(information_ratio(returns, benchmark, 21))
 
 
 def test_calmar_ratio_is_cagr_over_abs_max_drawdown():

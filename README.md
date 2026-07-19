@@ -250,13 +250,80 @@ Adjust `/st` (start time, 24h HH:MM, local time) to whenever your machine
 is reliably on — after NSE close (15:30 IST) is the only hard constraint;
 weekends/holidays are harmless no-ops (the pipeline tolerates stale gaps,
 see "Honesty notes"), not worth excluding via `/sc weekly` unless you'd
-rather skip the wasted run. To inspect, run on demand, or remove:
+rather skip the wasted run. (The three ML Review Board workflows —
+weekly publish, daily validation, monthly review, see "ML Review Board" —
+are currently GitHub-Actions-only; there's no local-scheduler equivalent
+documented for them yet.) To inspect, run on demand, or remove:
 
 ```powershell
 schtasks /query /tn "StockPredictor Nightly"
 schtasks /run /tn "StockPredictor Nightly"      # trigger immediately, e.g. to test
 schtasks /delete /tn "StockPredictor Nightly"   # /f to skip the confirmation prompt
 ```
+
+## ML Review Board
+
+A governance layer on top of the nightly pipeline above, not a replacement
+for it: it freezes an official weekly recommendation set, tracks what
+actually happened to it, and produces a monthly report a human reads before
+deciding whether anything about the model should change. **Nothing in this
+layer ever retrains the production model or deploys a change automatically**
+— every report ends with recommendations for a human to act on, never an
+action taken on their behalf.
+
+- **Weekly publish** (`reporting/publish.py`,
+  `.github/workflows/weekly_prediction.yml`, Fridays 15:00 UTC): freezes
+  that week's official Top-10 (90d horizon by default) into the
+  `published_predictions` table (`storage/models.py`) — full snapshot
+  (buy price, calibrated probability, a disagreement-derived `confidence`,
+  `relative_strength` — the same `meta_score`-based meaning this term
+  already has in the Streamlit UI/USER_GUIDE.md glossary, not a second
+  definition — technical/sentiment/model-input feature vectors, model
+  version, git commit) — plus
+  `predictions/YYYY-MM-DD.csv`/`.json`. Runs as its own job on a fresh
+  checkout, so it rebuilds technical features and retrains from committed
+  silver/gold data rather than assuming nightly's in-memory state is
+  available (`data/gold/features` is deliberately git-ignored — see
+  `.gitignore`); the determinism fix (`common/trading_calendar.py`) makes
+  that recompute reproduce nightly's own ranking for the same date. Never
+  overwrites a previously published date/horizon.
+- **Daily validation** (`reporting/validation.py`,
+  `.github/workflows/daily_validation.yml`, daily 15:00 UTC): resolves any
+  published prediction whose horizon has completed against the Gold
+  `labels` domain (reusing the model's own forward-return computation, not
+  a re-derivation of it) and stores actual return, benchmark return, alpha,
+  hit/miss, max drawdown, max gain, volatility, Sharpe, and information
+  ratio into `validation_results`.
+- **Performance dashboard** (`reporting/analytics.py` +
+  `reporting/dashboard.py`, regenerated at the end of every daily
+  validation run): a static, self-contained `reports/dashboard/index.html`
+  — accuracy/alpha/Sharpe headline tiles, monthly and rolling 6/12-month
+  performance, risk-adjusted return by horizon, and the prediction
+  probability distribution. The same `compute_performance_analytics` also
+  powers a live **Track Record** tab in the Streamlit app
+  (`apps/streamlit_app/app.py`) — both surfaces compute from the identical
+  function, so they can't silently disagree.
+- **Monthly ML review** (`reporting/review.py`,
+  `.github/workflows/monthly_ml_review.yml`, 1st of the month, 07:00 UTC):
+  `reports/YYYY-MM-ML-Review.md` and `reports/YYYY-MM-Improvement-
+  Proposal.md`. **Fully data-driven, not LLM-authored** — every table and
+  number is computed from real `published_predictions`/`validation_results`
+  /`explanations` history; sections that call for qualitative judgment are
+  left as explicit `<!-- ANALYSIS: fill in during monthly review -->`
+  placeholders rather than fabricated prose, and recommendations are
+  rule-based off computed thresholds (feature importance, sector alpha, IC
+  trend, calibration spread), not free text. The workflow opens a GitHub
+  Issue summarizing the month's findings — the trigger for a human to look,
+  not an automated decision.
+- **Explainability** (Part 8 of the original spec): already covered by the
+  existing SHAP pipeline (`explain/`) — nightly persists explanations for
+  its top-20 per horizon (a superset of the weekly-published top-10) to the
+  git-committed `gold/explanations` domain, joined by `reporting/review.py`
+  on (symbol, date, horizon) rather than recomputed.
+- **Human approval**: a human reads the two monthly reports and the
+  dashboard, then decides — ignore, open/triage the auto-created GitHub
+  issue, retrain, add features, or tune hyperparameters. No code path
+  anywhere in this layer skips that decision.
 
 ## News & Sentiment
 
@@ -343,9 +410,17 @@ no retroactive fix for that.
 See `src/stockpredictor/` for the package (`connectors/`, `ingestion/`,
 `features/`, `labels/`, `models/`, `prediction/`, `ranking/`, `explain/`,
 `backtest/`, `portfolio/`, `sentiment/`, `orchestration/`, `monitoring/`,
-`api/`, `storage/`, `common/`), `apps/streamlit_app/` for the dashboard,
-`scripts/` for one-off/research entrypoints,
-`tests/{unit,contract,leakage,integration}/` for the test suite, and
-`.github/workflows/nightly.yml` for the scheduled pipeline run (see
-"Scheduling & Deployment"). `requirements.txt` exists only for Streamlit
-Community Cloud's deploy step — local/CI installs use `pyproject.toml`.
+`api/`, `storage/`, `common/`, `reporting/` — the ML Review Board layer, see
+"ML Review Board"), `apps/streamlit_app/` for the dashboard,
+`scripts/` for one-off/research entrypoints (plus
+`publish_weekly_predictions.py`/`run_daily_validation.py`/
+`generate_monthly_review.py`, the ML Review Board's entrypoints),
+`tests/{unit,contract,leakage,integration}/` for the test suite,
+`predictions/` for the never-overwritten weekly CSV/JSON exports,
+`reports/` for the generated dashboard (`reports/dashboard/index.html`) and
+monthly `*-ML-Review.md`/`*-Improvement-Proposal.md` pairs, and
+`.github/workflows/` for the scheduled runs (`nightly.yml`,
+`monthly_backtest.yml`, `weekly_prediction.yml`, `daily_validation.yml`,
+`monthly_ml_review.yml` — see "Scheduling & Deployment" and "ML Review
+Board"). `requirements.txt` exists only for Streamlit Community Cloud's
+deploy step — local/CI installs use `pyproject.toml`.

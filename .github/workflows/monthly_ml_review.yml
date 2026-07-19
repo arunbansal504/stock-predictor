@@ -1,0 +1,87 @@
+name: Monthly ML review
+
+# 07:00 UTC on the 1st of each month -- one hour after monthly_backtest.yml's
+# own 06:00 UTC run that same day, so the review's "evidence of overfitting"
+# section (reporting/review.py) can read a freshly-refreshed committed
+# backtest result rather than a stale one.
+on:
+  schedule:
+    - cron: "0 7 1 * *"
+  workflow_dispatch: {}
+
+# Generates a fully data-driven (not LLM-authored) ML Review + Improvement
+# Proposal report pair (reporting/review.py) from published_predictions /
+# validation_results history, and opens a GitHub Issue summarizing it for a
+# human reviewer to act on -- this workflow never deploys a model change
+# itself (see reports/*.md's own "Human Approval" framing in README.md).
+permissions:
+  contents: write
+  issues: write
+
+concurrency:
+  group: nightly-pipeline
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+          cache-dependency-path: pyproject.toml
+
+      - name: Install dependencies
+        run: pip install -e .
+
+      - name: Generate monthly ML review
+        id: review
+        # Log lines also go to stdout (common/logging.py), so the script's
+        # full output can't be piped straight into $GITHUB_OUTPUT -- capture
+        # it, echo it for the Actions log, then extract only the two
+        # well-formed KEY=VALUE lines the script prints for this purpose.
+        run: |
+          OUTPUT=$(python scripts/generate_monthly_review.py)
+          echo "$OUTPUT"
+          grep '^REVIEW_PATH=' <<< "$OUTPUT" >> "$GITHUB_OUTPUT"
+          grep '^PROPOSAL_PATH=' <<< "$OUTPUT" >> "$GITHUB_OUTPUT"
+
+      - name: Commit and push the review report
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add reports/*.md
+          git diff --staged --quiet && echo "No new report to commit" && exit 0
+          git commit -m "Monthly ML review $(date -u +%Y-%m-%dT%H:%M:%SZ) [skip ci]"
+
+          # Same merge-not-rebase, keep-ours-on-conflict policy as
+          # nightly.yml -- see that file's comment for why.
+          git fetch origin main
+          if ! git merge origin/main --no-edit -m "Merge origin/main into monthly review commit"; then
+            git diff --name-only --diff-filter=U | while IFS= read -r f; do
+              if git cat-file -e "HEAD:$f" 2>/dev/null; then
+                git checkout --ours -- "$f"
+                git add "$f"
+              else
+                git rm -f -q "$f"
+              fi
+            done
+            git commit --no-edit
+          fi
+          git push origin main
+
+      - name: Open a GitHub issue summarizing the review
+        if: steps.review.outputs.REVIEW_PATH != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REVIEW_PATH: ${{ steps.review.outputs.REVIEW_PATH }}
+          PROPOSAL_PATH: ${{ steps.review.outputs.PROPOSAL_PATH }}
+        run: |
+          MONTH=$(date -u +%Y-%m)
+          gh issue create \
+            --title "ML Review Board: $MONTH findings" \
+            --body "Monthly ML review generated. See [\`$REVIEW_PATH\`]($REVIEW_PATH) for the full analysis and [\`$PROPOSAL_PATH\`]($PROPOSAL_PATH) for rule-based recommendations and the model change proposal. This report is fully data-driven, not LLM-authored -- sections marked ANALYSIS need a human read before acting. Nothing here has been auto-deployed; a human reviewer decides whether to ignore, retrain, add features, or tune hyperparameters."

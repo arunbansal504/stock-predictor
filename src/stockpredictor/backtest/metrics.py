@@ -64,6 +64,27 @@ def max_drawdown(returns: pd.Series) -> float:
     return float(drawdown.min())
 
 
+def max_gain(returns: pd.Series) -> float:
+    """Maximum trough-to-peak run-up of the cumulative equity curve, as a
+    positive fraction -- the mirror of `max_drawdown`, same equity-curve
+    construction, just tracking the running minimum instead of the running
+    maximum."""
+    if len(returns) == 0:
+        return float("nan")
+    equity = (1 + returns).cumprod()
+    running_min = equity.cummin()
+    runup = equity / running_min - 1.0
+    return float(runup.max())
+
+
+def information_ratio(returns: pd.Series, benchmark_returns: pd.Series, horizon_days: int) -> float:
+    """Annualized mean/std of active return (`returns - benchmark_returns`)
+    -- mathematically `sharpe_ratio` applied to the active-return series
+    with a zero risk-free rate, which is exactly what IR is."""
+    active = (returns - benchmark_returns).dropna()
+    return sharpe_ratio(active, horizon_days, risk_free_rate=0.0)
+
+
 def calmar_ratio(returns: pd.Series, horizon_days: int) -> float:
     mdd = max_drawdown(returns)
     if mdd == 0 or np.isnan(mdd):

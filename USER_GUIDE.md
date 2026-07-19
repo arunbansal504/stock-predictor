@@ -108,6 +108,22 @@ A **backtest** simulates how a strategy *would have* performed on past data it w
 | **Autocorrelation** | Checks whether consecutive backtest periods are secretly echoing each other rather than being independent measurements. High autocorrelation would mean the "195 periods" behind a result are worth fewer than 195 genuinely independent pieces of evidence, making the p-value overconfident. Low (near zero) is the reassuring answer. |
 | **Equity curve** | A chart of ₹1 growing (or shrinking) over time if you'd followed the strategy versus just holding the benchmark — the visual version of CAGR/Sharpe. |
 
+### The weekly track record (ML Review Board)
+
+Separate from the live app screens above: a set of generated files that
+keep this system honest about what it *actually* recommended and what
+*actually* happened, rather than only ever showing you today's picks.
+
+| Term | What it means here |
+|---|---|
+| **Published prediction** | Every Friday, this system freezes its Top-10 picks for the 90-day horizon into a permanent record — `predictions/YYYY-MM-DD.csv`/`.json` and a database table. "Published" means locked in: unlike the live Top Picks tab (which re-ranks every night), a published prediction is never edited or deleted after the fact, even if a later run would have ranked things differently. This is what makes the track record below trustworthy — you're seeing what was actually said in advance, not a re-run with hindsight. |
+| **Alpha** | Actual return minus what the NIFTY 500 benchmark did over the same holding period. Positive alpha = this pick beat the benchmark; negative = it lagged the benchmark, even if it still made money. |
+| **Hit / miss** | Whether a published prediction's alpha ended up positive (hit) or negative (miss), once its horizon has actually played out. |
+| **Information ratio** | Like the Sharpe ratio above, but measuring return *relative to the benchmark* (alpha) instead of raw return. Answers "how consistently did this beat the index, adjusted for how bumpy that outperformance was" rather than "how good was the return by itself." |
+| **Performance dashboard** | A snapshot page (`reports/dashboard/index.html`, regenerated daily) showing accuracy, average alpha, and win rate across every published prediction that has resolved so far — the plain-numbers version of "is this thing actually working," updated automatically as more predictions resolve. Early on, most of this will say "not enough resolved predictions yet" — a 90-day pick published this week won't resolve for three months, so the track record necessarily builds slowly. |
+| **Monthly ML Review** | A written report (`reports/YYYY-MM-ML-Review.md`), generated automatically on the 1st of each month, that inspects which past picks won and lost, which sectors and features tend to help or hurt, and whether the model's confidence is well-calibrated — all computed directly from the resolved track record above, not a written opinion. Sections that call for actual judgment are left as explicit blanks for a human reviewer to fill in, rather than guessed at. |
+| **Improvement Proposal** | A companion report (`reports/YYYY-MM-Improvement-Proposal.md`) listing concrete, evidence-based suggestions (e.g. "this indicator hasn't mattered in a year, consider dropping it") for a human to weigh in on. **Nothing in this system ever retrains the model or changes its behavior automatically** — every suggestion here waits for a person to read it and decide. |
+
 ### The Model Transparency screen
 
 | Term | What it means here |
@@ -127,7 +143,7 @@ Streamlit Cloud URL) and use the sidebar to set:
 - **Risk profile** — Conservative / Balanced / Aggressive
 - **Investment amount (₹)** — optional; leave at 0 for percentages only, or enter an amount to see ₹ figures on the Portfolio Constructor tab too
 
-Then the five tabs:
+Then the six tabs:
 
 **Top Picks** — the ranked list for your chosen horizon: rank, symbol,
 price, score, and disagreement, plus a bar chart. Start here to see what's
@@ -163,14 +179,24 @@ meaningful yet, based on resolved history? Early on (few resolved
 predictions), this will say there isn't enough data yet — that's expected,
 not broken.
 
+**Track Record** — the longest-horizon honesty check: accuracy, alpha, win
+rate, and risk-adjusted return computed from *actually resolved* published
+predictions (see the "weekly track record" glossary section above), not
+today's live rankings. This is horizon-independent (it covers every
+published prediction, not just the sidebar's selected horizon) and reads
+the exact same numbers as `reports/dashboard/index.html` and the monthly
+`reports/*-ML-Review.md` — all three surfaces compute from the same
+function, so they can't silently disagree. Early on this will say nothing
+has resolved yet, for the same reason Model Transparency does.
+
 ---
 
 ## 3. A sane way to actually use this, as a beginner
 
-1. **Start with Backtest Lab and Model Transparency**, not Top Picks. Get a
-   feel for whether this system has *any* real track record yet, and how
-   modest/noisy that track record honestly is (small `n_periods` = be extra
-   skeptical).
+1. **Start with Backtest Lab, Model Transparency, and Track Record**, not
+   Top Picks. Get a feel for whether this system has *any* real track
+   record yet, and how modest/noisy that track record honestly is (small
+   `n_periods`/resolved-prediction counts = be extra skeptical).
 2. **Then look at Top Picks and Stock Detail** for a horizon that matches
    your actual intended holding period — a 5-day score tells you nothing
    useful about a stock you plan to hold for 3 months.
@@ -185,6 +211,12 @@ not broken.
 6. **If you're not sure what a number means while using the app, come back
    to this guide (or the "Honesty notes" section of README.md) rather than
    guessing.**
+7. **Check the weekly track record before trusting the live picks.** The
+   Track Record tab (or, outside the app, `reports/dashboard/index.html`
+   and the monthly ML Review — see the glossary above) shows what actually
+   happened to *past* published predictions — a more grounded reality check
+   than anything Top Picks can show you about today's picks, since today's
+   picks haven't had time to be right or wrong yet.
 
 ---
 
