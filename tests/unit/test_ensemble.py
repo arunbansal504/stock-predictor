@@ -85,6 +85,24 @@ def test_meta_score_is_bounded_probability():
     assert (meta_score >= 0).all() and (meta_score <= 1).all()
 
 
+def test_base_scores_before_fit_raises():
+    X, _, _ = _synthetic_dataset(n=50)
+    model = StackedRanker()
+    with pytest.raises(RuntimeError, match="must be fit"):
+        model.base_scores(X)
+
+
+def test_base_scores_shape_and_bounds():
+    X, y, dates = _synthetic_dataset(n=300, seed=4)
+    model = StackedRanker(random_state=42)
+    model.fit(X, y, dates)
+
+    base = model.base_scores(X)
+    assert list(base.columns) == ["lgbm", "linear"]
+    assert base.shape == (len(X), 2)
+    assert (base.to_numpy() >= 0).all() and (base.to_numpy() <= 1).all()
+
+
 def test_predict_proba_equals_calibrator_applied_to_meta_score():
     """predict_proba must be exactly the calibrated transform of meta_score
     -- these should never silently diverge into two different computations

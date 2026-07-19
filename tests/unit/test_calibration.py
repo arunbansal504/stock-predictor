@@ -190,3 +190,148 @@ def test_separation_badge_directions_map_to_distinct_styles():
     assert underperform["style"] == "negative"
     assert none_["style"] == "neutral"
     assert len({outperform["style"], underperform["style"], none_["style"]}) == 3
+
+
+def _weak_signal_fixture(seed: int = 7, n: int = 2000):
+    """A weak-but-real signal that PAVA pools into only a handful of
+    blocks -- reproducing the live symptom (many raw scores collapsing
+    onto few distinct block values) so CIR interpolation has something
+    real to smooth between."""
+    rng = np.random.default_rng(seed)
+    raw_scores = rng.uniform(0.45, 0.56, n)
+    y_true = (rng.uniform(0, 1, n) < (0.4 + 0.1 * (raw_scores - 0.45) / 0.11)).astype(int)
+    return raw_scores, y_true
+
+
+def test_transform_is_strictly_monotonic_within_block_center_range():
+    raw_scores, y_true = _weak_signal_fixture()
+    cal = IsotonicCalibrator()
+    cal.fit(raw_scores, y_true)
+
+    centers = cal.block_stats["raw_center"].to_numpy()
+    grid = np.linspace(centers.min(), centers.max(), 200)
+    calibrated = cal.transform(grid)
+    assert (np.diff(calibrated) > 0).all() or len(centers) == 1
+
+
+def test_transform_gives_distinct_outputs_for_distinct_inputs_in_range():
+    raw_scores, y_true = _weak_signal_fixture()
+    cal = IsotonicCalibrator()
+    cal.fit(raw_scores, y_true)
+
+    centers = cal.block_stats["raw_center"].to_numpy()
+    if len(centers) < 2:
+        pytest.skip("fixture collapsed to a single block")
+    grid = np.linspace(centers.min(), centers.max(), 50)
+    calibrated = cal.transform(grid)
+    assert len(np.unique(calibrated)) == len(np.unique(grid)), (
+        "distinct raw scores within the fitted center range must map to "
+        "distinct calibrated scores under CIR interpolation -- this is the "
+        "behavior that fixes the 'many stocks share one identical score' symptom"
+    )
+
+
+def test_transform_at_block_centers_equals_block_empirical_rate():
+    raw_scores, y_true = _weak_signal_fixture()
+    cal = IsotonicCalibrator()
+    cal.fit(raw_scores, y_true)
+
+    blocks = cal.block_stats
+    at_centers = cal.transform(blocks["raw_center"].to_numpy())
+    np.testing.assert_allclose(at_centers, blocks["calibrated_score"].to_numpy())
+
+    if len(blocks) >= 2:
+        midpoint = (blocks["raw_center"].iloc[0] + blocks["raw_center"].iloc[1]) / 2
+        mid_value = cal.transform(np.array([midpoint]))[0]
+        lo, hi = sorted(blocks["calibrated_score"].iloc[:2])
+        assert lo <= mid_value <= hi, "interpolated points must stay within their bracketing block rates"
+
+
+def test_transform_degenerates_gracefully_for_a_single_pooled_block():
+    rng = np.random.default_rng(11)
+    raw_scores = np.sort(rng.uniform(0, 1, 500))
+    # y strictly anti-monotonic in raw-score order (all 1s then all 0s) --
+    # the one pattern PAVA is guaranteed to pool into a single flat block,
+    # since any non-decreasing fit to a decreasing target must average out.
+    half = len(raw_scores) // 2
+    y_true = np.concatenate([np.ones(half, dtype=int), np.zeros(len(raw_scores) - half, dtype=int)])
+
+    cal = IsotonicCalibrator()
+    cal.fit(raw_scores, y_true)
+    assert len(cal.block_stats) == 1, "fixture sanity check: must fully pool into one block"
+
+    out = cal.transform(np.array([0.0, 0.3, 0.5, 0.7, 1.0]))
+    assert np.allclose(out, out[0]), "a single pooled block must produce a constant (not crash)"
+    assert out[0] == pytest.approx(cal.base_rate, abs=0.05)
+
+
+def test_transform_clamps_outside_fitted_range_and_stays_bounded():
+    raw_scores, y_true = _weak_signal_fixture()
+    cal = IsotonicCalibrator()
+    cal.fit(raw_scores, y_true)
+
+    blocks = cal.block_stats
+    below = cal.transform(np.array([blocks["raw_center"].min() - 5.0]))[0]
+    above = cal.transform(np.array([blocks["raw_center"].max() + 5.0]))[0]
+    assert below == pytest.approx(blocks["calibrated_score"].iloc[0])
+    assert above == pytest.approx(blocks["calibrated_score"].iloc[-1])
+
+    extreme = cal.transform(np.array([-100.0, 100.0]))
+    assert (extreme >= 0).all() and (extreme <= 1).all()
+
+
+def test_transform_gives_equal_outputs_for_equal_raw_scores():
+    raw_scores, y_true = _weak_signal_fixture()
+    cal = IsotonicCalibrator()
+    cal.fit(raw_scores, y_true)
+
+    out = cal.transform(np.array([0.5, 0.5, 0.5]))
+    assert out[0] == out[1] == out[2]
+
+
+def test_transform_no_longer_identically_equals_separation_empirical_rate():
+    """The whole point of CIR: `transform` interpolates between block
+    centers, so it diverges from `separation_info`'s block-anchored
+    `empirical_rate` for query points that aren't exactly at a block
+    center -- this is intentional, not a regression."""
+    raw_scores, y_true = _weak_signal_fixture()
+    cal = IsotonicCalibrator()
+    cal.fit(raw_scores, y_true)
+
+    blocks = cal.block_stats
+    if len(blocks) < 2:
+        pytest.skip("fixture collapsed to a single block")
+    midpoint = (blocks["raw_center"].iloc[0] + blocks["raw_center"].iloc[1]) / 2
+    score = cal.transform(np.array([midpoint]))[0]
+    empirical_rate = cal.separation_info(np.array([midpoint]))["empirical_rate"].iloc[0]
+    assert score != pytest.approx(empirical_rate)
+
+
+def test_separation_info_unaffected_by_cir_interpolation():
+    """`separation_info`/`block_stats` describe pure PAVA blocks and must
+    not change shape or values because of the CIR transform change."""
+    raw_scores, y_true = _three_regime_off_center_fixture()
+    cal = IsotonicCalibrator()
+    cal.fit(raw_scores, y_true)
+
+    info = cal.separation_info(np.array([0.15, 0.5, 0.87]))
+    assert list(info.columns) == ["n", "empirical_rate", "p_value", "separation_direction", "base_rate"]
+    assert info.iloc[0]["separation_direction"] == SEPARATION_UNDERPERFORM
+    assert info.iloc[2]["separation_direction"] == SEPARATION_OUTPERFORM
+
+
+def test_block_stats_before_fit_raises():
+    cal = IsotonicCalibrator()
+    with pytest.raises(RuntimeError, match="must be fit"):
+        cal.block_stats
+
+
+def test_block_stats_includes_raw_center_between_lo_and_hi():
+    raw_scores, y_true = _weak_signal_fixture()
+    cal = IsotonicCalibrator()
+    cal.fit(raw_scores, y_true)
+
+    blocks = cal.block_stats
+    assert "raw_center" in blocks.columns
+    assert (blocks["raw_center"] >= blocks["raw_lo"]).all()
+    assert (blocks["raw_center"] <= blocks["raw_hi"]).all()

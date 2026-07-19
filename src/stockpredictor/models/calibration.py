@@ -5,6 +5,22 @@ Must be fit on out-of-sample predictions -- never on the same rows a base
 model trained on, or the calibration curve inherits the base model's
 in-sample overconfidence and the whole point (§30: "reliability curve shows
 predicted probabilities ~= realized frequencies") is lost.
+
+`transform` does NOT return raw PAVA step-function output. Plain isotonic
+regression pools ties into flat blocks, which -- for a weak signal -- can
+collapse dozens of genuinely different raw scores onto one identical
+calibrated value (see `_block_stats`/`separation_info` for that same block
+structure, still used for confidence reporting). To keep the *displayed*
+score differentiated while staying calibration-honest, `transform` instead
+places each PAVA block's empirical rate at that block's mean raw score
+("center") and linearly interpolates between adjacent block centers
+(centered isotonic regression). Every knot value is still a real empirical
+outcome rate -- nothing is fabricated -- but a row landing between two
+block centers gets a distinct, honestly-interpolated value instead of being
+flattened to its block's rate. `separation_info`'s `empirical_rate` remains
+the pure block anchor, so `transform(raw)` and `separation_info(raw)`'s
+`empirical_rate` are no longer identical by construction -- that divergence
+is intentional.
 """
 
 from __future__ import annotations
@@ -61,6 +77,12 @@ class IsotonicCalibrator:
         # Recomputed on every `fit` call from that call's own calibration
         # set, never frozen across refits.
         self.base_rate: float | None = None
+        # Interpolation knots for `transform` -- block centers (x) and each
+        # block's empirical rate (y), derived from `_block_stats` at fit
+        # time. See module docstring for why `transform` interpolates
+        # instead of returning the raw PAVA step value.
+        self._interp_x: np.ndarray | None = None
+        self._interp_y: np.ndarray | None = None
 
     def fit(self, raw_scores: np.ndarray, y_true: np.ndarray) -> "IsotonicCalibrator":
         raw_scores = np.asarray(raw_scores, dtype=float)
@@ -69,6 +91,17 @@ class IsotonicCalibrator:
         self._fitted = True
         self.base_rate = float(y_true.mean())
         self._block_stats = self._compute_block_stats(raw_scores, y_true, self.base_rate)
+
+        # Blocks are disjoint, ordered raw-score ranges (adjacent blocks
+        # differ in calibrated value by construction -- see block_id below),
+        # so centers are strictly increasing except in float-degenerate
+        # edge cases; dedupe defensively rather than let `np.interp` receive
+        # a non-increasing `xp`.
+        centers = self._block_stats["raw_center"].to_numpy()
+        rates = self._block_stats["calibrated_score"].to_numpy()
+        centers_unique, first_idx = np.unique(centers, return_index=True)
+        self._interp_x = centers_unique
+        self._interp_y = rates[first_idx]
         return self
 
     def _compute_block_stats(self, raw_scores: np.ndarray, y_true: np.ndarray, base_rate: float) -> pd.DataFrame:
@@ -105,6 +138,11 @@ class IsotonicCalibrator:
             {
                 "raw_lo": grouped["raw"].min().to_numpy(),
                 "raw_hi": grouped["raw"].max().to_numpy(),
+                # Block center (mean raw score) -- the interpolation knot
+                # `transform` places this block's empirical rate at. Not
+                # used by `separation_info` (which reports the block's raw
+                # range and rate, not its center).
+                "raw_center": grouped["raw"].mean().to_numpy(),
                 "calibrated_score": grouped["calibrated"].first().to_numpy(),
                 "n": n,
                 "empirical_rate": rate,
@@ -114,9 +152,25 @@ class IsotonicCalibrator:
         ).sort_values("raw_lo").reset_index(drop=True)
 
     def transform(self, raw_scores: np.ndarray) -> np.ndarray:
+        """Centered-isotonic calibrated probability for each raw score --
+        linear interpolation between PAVA block centers (see module
+        docstring), clamped to each block's rate outside the outer centers
+        and to [0, 1] overall. NOT the same as looking up each row's PAVA
+        block value directly (that's `separation_info`'s `empirical_rate`)."""
         if not self._fitted:
             raise RuntimeError("IsotonicCalibrator must be fit before transform")
-        return self._iso.predict(raw_scores)
+        raw_scores = np.asarray(raw_scores, dtype=float)
+        out = np.interp(raw_scores, self._interp_x, self._interp_y)
+        return np.clip(out, 0.0, 1.0)
+
+    @property
+    def block_stats(self) -> pd.DataFrame:
+        """Copy of the fitted PAVA block table (raw_lo/raw_hi/raw_center/
+        calibrated_score/n/empirical_rate/p_value/separation_direction) --
+        for diagnostics/inspection, not consumed by `transform` callers."""
+        if not self._fitted:
+            raise RuntimeError("IsotonicCalibrator must be fit before block_stats")
+        return self._block_stats.copy()
 
     def fit_transform(self, raw_scores: np.ndarray, y_true: np.ndarray) -> np.ndarray:
         return self.fit(raw_scores, y_true).transform(raw_scores)

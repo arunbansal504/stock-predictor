@@ -59,6 +59,11 @@ python -m venv .venv
 .venv/Scripts/python scripts/run_phase1_smoke.py   # 5d only, full pipeline incl. ingestion
 .venv/Scripts/python scripts/run_backtests.py       # 5d/30d/90d, reuses data already in the lake
 
+# Or audit today's predictions stock-by-stock (news, sentiment, technicals,
+# feature vector, base-learner/meta/calibrated scores, feature importances,
+# calibrator block table) -- read-only, trains in memory, writes nothing:
+.venv/Scripts/python scripts/run_prediction_diagnostics.py --horizon 90d --top 10
+
 # Serve the dashboard (reads whatever the pipeline last published)
 .venv/Scripts/python -m streamlit run apps/streamlit_app/app.py
 
@@ -277,6 +282,17 @@ no retroactive fix for that.
   nothing else changed reproduces byte-identical rankings. If two runs on
   the same day *do* produce different ranks, that's a regression, not
   expected noise — `tests/integration/test_determinism.py` guards this.
+- **`score` vs. `empirical_outperform_rate`**: these are related but not the
+  same number. `models/calibration.py`'s `IsotonicCalibrator` still fits
+  PAVA blocks internally (grouping raw model output into evidence bands with
+  similar historical outcomes — `empirical_outperform_rate`/
+  `separation_*` describe those bands directly), but `score` itself is a
+  *centered-isotonic* interpolation between each block's own historical rate
+  and its neighbors', so it stays honestly differentiated per stock instead
+  of flattening every stock in a band to one identical value. Run
+  `scripts/run_prediction_diagnostics.py` to see this end to end for real
+  stocks — per-symbol feature vectors, base-learner/meta/calibrated scores,
+  and the calibrator's block table in one place.
 - **The model does not yet demonstrate real ranking skill**, as of the most
   recent `scripts/run_backtests.py` run: on all three published horizons
   (5d/30d/90d), the strategy beats the cap-weighted NIFTY 500 benchmark,

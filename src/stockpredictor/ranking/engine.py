@@ -91,19 +91,17 @@ def rank_universe(
     """Assign rank 1 = best (highest score).
 
     Ties on `score_col` are broken by `tiebreak_col` (when present), not by
-    row order. This matters because the calibrated score is a genuine step
-    function by construction (isotonic calibration's Pool Adjacent
-    Violators merges any region where the empirical win-rate isn't reliably
-    monotonic into one flat block -- observed live: the whole top of a
-    ranking landing on one identical calibrated value, since there wasn't
-    enough evidence in that sparse tail to honestly separate them).
-    Breaking those ties by row order would produce a rank 1-vs-30 ordering
-    that looks meaningful but carries zero real information. `meta_score`
+    row order. `score` is calibrated via centered-isotonic interpolation
+    (models/calibration.py), so exact ties are now the exception rather
+    than the rule -- but they still happen for rows with identical raw
+    model output, or rows clamped flat outside the fitted calibration
+    range. Breaking those ties by row order would produce an ordering that
+    looks meaningful but carries zero real information. `meta_score`
     (models/ensemble.py's pre-calibration, continuous meta-learner output)
-    stays genuinely differentiated through that same region, so use it
-    instead. Falls back to row order only if `tiebreak_col` isn't present
-    in `filtered` -- callers that don't have it (e.g. tests using synthetic
-    already-distinct scores) still work, they just don't need a tiebreak."""
+    stays differentiated in exactly those cases, so use it instead. Falls
+    back to row order only if `tiebreak_col` isn't present in `filtered` --
+    callers that don't have it (e.g. tests using synthetic already-distinct
+    scores) still work, they just don't need a tiebreak."""
     if filtered.empty:
         out = filtered.copy()
         out["rank"] = pd.Series(dtype="int64")

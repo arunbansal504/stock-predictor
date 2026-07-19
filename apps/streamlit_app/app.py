@@ -185,11 +185,14 @@ with tab_picks:
         if has_meta_score:
             st.caption(
                 "`relative_strength` is **not** a probability and has **not** been validated "
-                "against forward returns -- it's the model's raw, uncalibrated signal, shown "
-                "only because the calibrated `score` can honestly tie across many stocks "
-                "(isotonic calibration collapsing a sparse tail, not a bug -- see "
-                "USER_GUIDE.md). It breaks ties in `rank` so ordering isn't arbitrary, but "
-                "it is not a second opinion of equal weight to `score`."
+                "against forward returns -- it's the model's raw, uncalibrated signal. "
+                "`score` is calibrated via interpolation between historical evidence bands "
+                "(see USER_GUIDE.md), so it and `empirical_outperform_rate` are no longer the "
+                "same number -- `score` reflects this stock's interpolated position, while "
+                "`empirical_outperform_rate` is the anchor band's own historical rate. "
+                "`relative_strength` breaks any remaining exact ties in `rank` (identical raw "
+                "scores, or scores clamped flat outside the calibration range), but it is not "
+                "a second opinion of equal weight to `score`."
             )
 
 with tab_detail:

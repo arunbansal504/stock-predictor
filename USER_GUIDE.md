@@ -34,10 +34,10 @@ qualified financial advisor.
 | Term | What it means here |
 |---|---|
 | **Score** | A number between 0 and 1 — the model's *calibrated probability* that this stock's return over the chosen horizon will beat that same day's **median stock in the universe** (not the benchmark index — see Benchmark above). A score of 0.52 means: historically, when the model gave stocks a score around 0.52, they beat the typical stock that day about 52% of the time. It is **not** "52% expected gain" — it's a probability of being *better than a typical pick*, which is a different (and in a strong market, often harder) bar than just "going up," and a different question from "beating the index." |
-| **Rank** | The stock's position when every candidate is sorted by score, best first. Rank 1 = highest score that day. When several stocks share the exact same score (see **Relative strength** below for why that happens honestly), ties are broken by relative strength — not arbitrarily, and not by row order. |
-| **Relative strength** | A second number shown alongside score, used only to order stocks that share the identical score. **It is not a probability** — it's the model's raw, uncalibrated internal signal, before the honesty-check step (calibration) is applied. It's shown because calibration can legitimately give many different stocks the *exact same* score (see Calibration below) — without this number, the ranking among those tied stocks would look arbitrary even though it isn't. Use it only to understand *why* one tied stock outranks another, never as a confidence number on its own. |
+| **Rank** | The stock's position when every candidate is sorted by score, best first. Rank 1 = highest score that day. Two stocks only share the exact same score in the rarer case of identical underlying model output, or scores at the edge of the calibrated range — when that happens, ties are broken by relative strength (see below), not arbitrarily and not by row order. |
+| **Relative strength** | A second number shown alongside score — the model's raw, uncalibrated internal signal, before the honesty-check step (calibration) is applied. **It is not a probability.** Score is calibrated by interpolating between historical-evidence bands (see Calibration below), so it's usually distinct per stock; relative strength is shown mainly to break the rarer exact ties, and as a window into the model's un-smoothed output. Use it to understand *why* one stock outranks another, never as a confidence number on its own. |
 | **Ensemble disagreement** | This app doesn't use one model — it uses several (a tree-based model and a simpler linear one) and blends them. Disagreement measures how much those models *disagree* with each other on this particular stock. Low disagreement = the models broadly agree, which is a mild trust signal. High disagreement = the models see it differently, which is a reason for extra caution, even if the blended score looks good. |
-| **Calibration** | A calibrated score means the number is *honest* — if the model says 0.6, that should really happen about 60% of the time when checked against history. Look at the **Model Transparency** tab to see whether that's actually true for this system right now. Calibration works by grouping raw predictions into bands with similar historical outcomes — which means many different stocks can legitimately land in the same band and get the *exact same* score, especially near the edges where there's less history to work with. That's calibration being honest about the limits of the evidence, not a bug. |
+| **Calibration** | A calibrated score means the number is *honest* — if the model says 0.6, that should really happen about 60% of the time when checked against history. Look at the **Model Transparency** tab to see whether that's actually true for this system right now. Calibration groups raw predictions into bands with similar historical outcomes, then places each stock's score at an interpolated position between its band's own historical rate and its neighbors' — so scores stay distinct per stock while remaining anchored to real historical evidence rather than a smooth curve fit that could overstate precision the data doesn't support. |
 
 ### Reading a stock's "why"
 
@@ -210,11 +210,17 @@ not broken.
   one of them. That's the honest current state: real evidence of skill
   over "beat the index," not yet real evidence of skill over "beat a coin
   flip." Check both columns, not just one.
-- **Seeing many stocks with the identical score and assuming the ranking
-  is broken.** It isn't — that's honest calibration legitimately grouping
-  similar predictions together (see Calibration above). The rank order
-  among those tied stocks is still meaningful; check the **relative
-  strength** column to see why one outranks another.
+- **Seeing two stocks with the identical score and assuming the ranking
+  is broken.** It isn't — exact ties happen when the underlying model
+  output is identical, or at the edge of the calibrated range (see
+  Calibration above). The rank order between those tied stocks is still
+  meaningful; check the **relative strength** column to see why one
+  outranks another.
+- **Confusing `score` with `empirical_outperform_rate`.** They're related
+  but not the same: `empirical_outperform_rate` is the historical win rate
+  of the evidence band a stock's score is anchored near; `score` is that
+  stock's own interpolated position, which can differ from the band rate
+  even for two stocks in the same neighborhood.
 
 ---
 

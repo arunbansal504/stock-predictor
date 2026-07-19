@@ -147,24 +147,32 @@ class StackedRanker:
         calibration -- a continuous, finer-grained signal than
         `predict_proba`'s output.
 
-        Isotonic calibration is a genuine step function by construction
-        (Pool Adjacent Violators merges any region where the empirical
-        win-rate isn't reliably monotonic into one flat block), and does
-        exactly that in the sparse, noisy tail of a modest signal -- e.g.
-        observed live, raw scores from ~0.49 to ~0.56 all collapsing onto
-        one calibrated value, because there wasn't enough evidence to
-        honestly distinguish them. That's calibration doing its job
-        correctly, not a bug -- but it means `predict_proba`'s output alone
-        is a poor *ranking* key: dozens of genuinely different stocks can
-        land on the exact same calibrated score. `meta_score` stays
-        continuous through that same region, so ranking/engine.py uses it
-        to break ties meaningfully instead of falling back to arbitrary row
-        order. The calibrated score remains what's shown to the user as
-        the honest probability estimate -- this is only for sort order."""
+        Isotonic calibration's underlying PAVA fit still pools any region
+        where the empirical win-rate isn't reliably monotonic into flat
+        blocks -- e.g. observed live, raw scores from ~0.49 to ~0.56 all
+        landing in the same block, because there wasn't enough evidence to
+        honestly distinguish them (see `separation_info`, which still
+        reports that block structure). But `IsotonicCalibrator.transform`
+        (what `predict_proba` returns) interpolates between block centers
+        rather than returning the raw block value, so it stays continuous
+        through that region too. `meta_score` remains useful as: (a) the
+        pre-calibration signal for diagnostics, and (b) `ranking/engine.py`'s
+        tiebreak fallback for the rarer cases `transform` still ties exactly
+        -- identical raw scores, or scores clamped flat outside the fitted
+        range."""
         if not self._fitted:
             raise RuntimeError("StackedRanker must be fit before meta_score")
         meta_features = self._base_predictions(X)
         return self.meta.predict_proba(meta_features)[:, 1]
+
+    def base_scores(self, X: pd.DataFrame) -> pd.DataFrame:
+        """Per-row LightGBM and linear-baseline probabilities (the inputs to
+        the meta-learner), exposed for diagnostics -- e.g. checking whether
+        one base learner dominates or the two disagree systematically."""
+        if not self._fitted:
+            raise RuntimeError("StackedRanker must be fit before base_scores")
+        preds = self._base_predictions(X)
+        return pd.DataFrame({"lgbm": preds[:, 0], "linear": preds[:, 1]})
 
     def separation_info(self, X: pd.DataFrame) -> pd.DataFrame:
         """Per-row calibration evidence backing `predict_proba`'s score --
