@@ -213,6 +213,18 @@ per-symbol FinBERT scoring across the ~500-symbol universe — the workflow
 sets `timeout-minutes: 300` and a concurrency guard so a second scheduled
 trigger can't overlap a still-running one.
 
+**Monthly backtest audit**: `.github/workflows/monthly_backtest.yml` runs
+`scripts/run_backtests.py` at 06:00 UTC on the 1st of each month (also
+triggerable on demand via `workflow_dispatch`), reusing whatever
+prices/features/labels the nightly workflow has already accumulated in the
+lake — it does not re-ingest anything, only re-validates. This exists so
+the CAGR/Sharpe/IC numbers in "Honesty notes" below and the Backtest Lab
+tab don't quietly go stale for months between manual runs; results are
+committed back to `data/gold/backtests/` the same way the nightly pipeline
+persists `data/`. It shares the nightly workflow's `nightly-pipeline`
+concurrency group (by name, across the two separate workflow files) so the
+two never race each other's `data/` commit-and-push.
+
 **Viewing results**: deploy `apps/streamlit_app/app.py` to
 [Streamlit Community Cloud](https://share.streamlit.io) (free, connects
 directly to this GitHub repo): sign in with GitHub → "New app" → pick this

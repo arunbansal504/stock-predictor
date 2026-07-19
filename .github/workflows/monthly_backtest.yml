@@ -1,0 +1,77 @@
+name: Monthly backtest audit
+
+# 06:00 UTC on the 1st of each month -- clear of the nightly pipeline's
+# 13:30 UTC daily run (see nightly.yml). Reuses data already in the lake
+# (prices/features/labels, most recently committed by nightly.yml); this
+# workflow does NOT re-ingest anything, it only walk-forward validates and
+# refreshes the audited backtest numbers (scripts/run_backtests.py) --
+# see README's "Honesty notes" and the memory this exists to keep current:
+# a stale backtest result is exactly what lets "the model looks good" go
+# unchecked for months.
+on:
+  schedule:
+    - cron: "0 6 1 * *"
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+# Shares the nightly pipeline's concurrency group (same group name, though
+# defined in a different workflow file -- GitHub Actions serializes by
+# group name across workflows) so this never races the nightly run's own
+# data/ commit-and-push. cancel-in-progress: false -- whichever job is
+# already running finishes; this one queues rather than getting killed.
+concurrency:
+  group: nightly-pipeline
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    # Locally this has taken ~30-90 minutes across all three horizons
+    # (dominated by the linear baseline's SAGA solver as each walk-forward
+    # fold's training window grows); generous headroom for a slower runner.
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+          cache-dependency-path: pyproject.toml
+
+      # No `[sentiment]`/`[dev]` extras needed -- run_backtests.py only
+      # touches models/backtest code (lightgbm, scikit-learn, scipy,
+      # pandas), all in the base dependency set.
+      - name: Install dependencies
+        run: pip install -e .
+
+      - name: Run monthly backtest audit
+        run: python scripts/run_backtests.py
+
+      - name: Commit and push updated backtest results
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add data/gold/backtests/
+          git diff --staged --quiet && echo "No backtest changes to commit" && exit 0
+          git commit -m "Monthly backtest audit $(date -u +%Y-%m-%dT%H:%M:%SZ) [skip ci]"
+
+          # Same merge-not-rebase, keep-ours-on-conflict policy as
+          # nightly.yml -- see that file's comment for why. This job's
+          # freshly-recomputed backtest result is always the authoritative
+          # "latest" for the paths it touches.
+          git fetch origin main
+          if ! git merge origin/main --no-edit -m "Merge origin/main into monthly backtest commit"; then
+            git diff --name-only --diff-filter=U | while IFS= read -r f; do
+              if git cat-file -e "HEAD:$f" 2>/dev/null; then
+                git checkout --ours -- "$f"
+                git add "$f"
+              else
+                git rm -f -q "$f"
+              fi
+            done
+            git commit --no-edit
+          fi
+          git push origin main
